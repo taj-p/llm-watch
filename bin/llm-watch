@@ -1,10 +1,25 @@
-#!/usr/bin/env python3
-from pathlib import Path
-import sys
+#!/usr/bin/env sh
 
-repo = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(repo / "src"))
+set -eu
 
-from llm_watch.cli import main
+repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+binary="$repo_dir/target/release/llm-watch"
+needs_build=0
 
-raise SystemExit(main())
+if [ ! -x "$binary" ]; then
+  needs_build=1
+elif [ "$repo_dir/Cargo.toml" -nt "$binary" ] || [ "$repo_dir/Cargo.lock" -nt "$binary" ]; then
+  needs_build=1
+elif find "$repo_dir/src" -type f -newer "$binary" -print -quit | grep -q .; then
+  needs_build=1
+fi
+
+if [ "$needs_build" -eq 1 ]; then
+  if ! command -v cargo >/dev/null 2>&1; then
+    printf 'llm-watch: cargo is required to build the Rust binary\n' >&2
+    exit 1
+  fi
+  cargo build --quiet --release --locked --manifest-path "$repo_dir/Cargo.toml"
+fi
+
+exec "$binary" "$@"

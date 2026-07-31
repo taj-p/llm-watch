@@ -5,18 +5,14 @@ set -eu
 repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 target_dir=${HOME}/.local/bin
 target=${target_dir}/llm-watch
-source=${repo_dir}/bin/llm-watch
+source=${repo_dir}/target/release/llm-watch
 
-if ! command -v python3 >/dev/null 2>&1; then
-  printf 'llm-watch: python3 is required\n' >&2
+if ! command -v cargo >/dev/null 2>&1; then
+  printf 'llm-watch: cargo is required; install Rust from https://rustup.rs\n' >&2
   exit 1
 fi
 
-python3 -c 'import sys; raise SystemExit(sys.version_info < (3, 9))' || {
-  printf 'llm-watch: Python 3.9 or later is required\n' >&2
-  exit 1
-}
-
+cargo build --release --locked --manifest-path "$repo_dir/Cargo.toml"
 mkdir -p "$target_dir"
 
 if [ -e "$target" ] && [ ! -L "$target" ]; then

@@ -20,13 +20,13 @@ Codex / Claude hooks              Laptop
 
 ## Requirements
 
-- Python 3.9 or later
+- Rust and Cargo when installing from source
 - SSH access from the dashboard machine to each devbox
 - Codex CLI and/or Claude Code on the machines being watched
 - Optional: tmux, for pane names in the dashboard
 - Optional: `terminal-notifier` on macOS or `notify-send` on Linux
 
-There are no Python package dependencies.
+`llm-watch` is a native Rust binary and has no runtime language dependency.
 
 ## Install
 
@@ -36,8 +36,9 @@ Clone this repository on the laptop and every devbox, then run:
 ./install.sh
 ```
 
-The installer creates `~/.local/bin/llm-watch` as a symlink to the checkout.
-Verify it with:
+The installer builds an optimized, locked release and creates
+`~/.local/bin/llm-watch` as a symlink to `target/release/llm-watch`. Verify it
+with:
 
 ```sh
 llm-watch --version
@@ -262,7 +263,9 @@ agent to override the automatically derived prompt label.
 ## Development
 
 ```sh
-PYTHONPATH=src python3 -m unittest discover -s tests -v
+cargo fmt --all -- --check
+cargo test
+cargo clippy --all-targets -- -D warnings
 ```
 
 The state files are versioned JSON. Per-session snapshots are written using an
