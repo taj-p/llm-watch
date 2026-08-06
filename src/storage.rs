@@ -93,6 +93,19 @@ pub fn read_json_if_exists<T: DeserializeOwned>(path: &Path) -> Option<T> {
 }
 
 pub fn atomic_json<T: Serialize>(path: &Path, value: &T) -> AppResult<()> {
+    atomic_write(path, |writer| {
+        serde_json::to_writer(&mut *writer, value)?;
+        writer.write_all(b"\n")?;
+        Ok(())
+    })
+}
+
+/// Writes through a temporary file in the same directory and renames it into
+/// place, so a reader never observes a half-written file.
+pub fn atomic_write(
+    path: &Path,
+    fill: impl FnOnce(&mut BufWriter<std::fs::File>) -> AppResult<()>,
+) -> AppResult<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -110,8 +123,11 @@ pub fn atomic_json<T: Serialize>(path: &Path, value: &T) -> AppResult<()> {
         .create_new(true)
         .open(&temporary)?;
     let mut writer = BufWriter::new(file);
-    serde_json::to_writer(&mut writer, value)?;
-    writer.write_all(b"\n")?;
+    if let Err(error) = fill(&mut writer) {
+        drop(writer);
+        let _ = fs::remove_file(&temporary);
+        return Err(error);
+    }
     writer.flush()?;
     writer.get_ref().sync_all()?;
     drop(writer);
@@ -149,6 +165,11 @@ pub fn write_event_at(event: &Event, root: &Path) -> AppResult<RunRecord> {
             }
             if run.tmux.is_empty() {
                 run.tmux = previous.tmux;
+            }
+            // Only a completed turn carries a message; keep it through the
+            // approval and session events that follow.
+            if run.message.is_empty() {
+                run.message = previous.message;
             }
         }
         atomic_json(&run_path, &run)?;
@@ -272,6 +293,10 @@ mod tests {
     use super::*;
 
     fn event(id: &str, state: &str, task: &str) -> Event {
+        message_event(id, state, task, "")
+    }
+
+    fn message_event(id: &str, state: &str, task: &str, message: &str) -> Event {
         Event {
             schema_version: SCHEMA_VERSION,
             event_id: id.to_owned(),
@@ -284,6 +309,7 @@ mod tests {
             project: "app".to_owned(),
             tmux: "app:1.0".to_owned(),
             task: task.to_owned(),
+            message: message.to_owned(),
             state: state.to_owned(),
             updated_at: utc_now(),
         }
@@ -306,6 +332,32 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["event-1", "event-2"]
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn the_last_message_survives_later_events_that_carry_none() {
+        let root = temporary_test_dir("message");
+        write_event_at(
+            &message_event(
+                "event-1",
+                "ready",
+                "Rebase the train",
+                "Rebased and force pushed.",
+            ),
+            &root,
+        )
+        .unwrap();
+        // An approval prompt arrives with no message of its own.
+        write_event_at(&message_event("event-2", "approval", "", ""), &root).unwrap();
+        let result = snapshot_at(&root, 10).unwrap();
+        assert_eq!(result.runs[0].state, "approval");
+        assert_eq!(result.runs[0].message, "Rebased and force pushed.");
+
+        // A newer turn replaces it rather than being ignored.
+        write_event_at(&message_event("event-3", "ready", "", "Tests pass."), &root).unwrap();
+        let result = snapshot_at(&root, 10).unwrap();
+        assert_eq!(result.runs[0].message, "Tests pass.");
         let _ = fs::remove_dir_all(root);
     }
 }

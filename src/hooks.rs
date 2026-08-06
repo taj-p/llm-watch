@@ -1,10 +1,16 @@
-use crate::model::{Event, SCHEMA_VERSION, TASK_LIMIT};
+use crate::model::{Event, MESSAGE_LIMIT, SCHEMA_VERSION, TASK_LIMIT};
 use crate::storage::{short_host, utc_now, AppResult};
 use serde_json::{Map, Value};
 use std::env;
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::process::Command;
 use uuid::Uuid;
+
+/// Only the tail of a transcript is scanned; they grow to many megabytes and a
+/// hook must stay well inside its timeout.
+const TRANSCRIPT_TAIL_BYTES: u64 = 256 * 1024;
 
 pub fn normalize_event(
     provider: &str,
@@ -54,6 +60,8 @@ pub fn normalize_event(
         .unwrap_or(&cwd)
         .to_owned();
 
+    let message = last_assistant_message(payload);
+
     Some(Event {
         schema_version: SCHEMA_VERSION,
         event_id: Uuid::new_v4().to_string(),
@@ -66,9 +74,79 @@ pub fn normalize_event(
         project,
         tmux: tmux_target(),
         task,
+        message,
         state,
         updated_at: utc_now(),
     })
+}
+
+/// Codex puts the text straight in the notify payload; Claude only gives a path
+/// to the transcript, so the last assistant turn is read back out of it.
+fn last_assistant_message(payload: &Map<String, Value>) -> String {
+    let direct = string_field(
+        payload,
+        &[
+            "last-assistant-message",
+            "last_assistant_message",
+            "lastAssistantMessage",
+        ],
+    )
+    .unwrap_or_default();
+    if !direct.is_empty() {
+        return compact_text(&direct, MESSAGE_LIMIT);
+    }
+    string_field(payload, &["transcript_path", "transcript-path"])
+        .map(|path| message_from_transcript(Path::new(&path)))
+        .unwrap_or_default()
+}
+
+fn message_from_transcript(path: &Path) -> String {
+    let Some(tail) = read_tail(path, TRANSCRIPT_TAIL_BYTES) else {
+        return String::new();
+    };
+    // The first line may be a fragment of a record split by the tail boundary.
+    for line in tail.lines().rev() {
+        let Ok(Value::Object(record)) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if let Some(text) = assistant_text(&record) {
+            return compact_text(&text, MESSAGE_LIMIT);
+        }
+    }
+    String::new()
+}
+
+/// Recognises a Claude transcript entry (`type: "assistant"`, content blocks)
+/// and a Codex rollout entry (`payload.type: "agent_message"`).
+fn assistant_text(record: &Map<String, Value>) -> Option<String> {
+    if let Some(Value::Object(inner)) = record.get("payload") {
+        if inner.get("type").and_then(Value::as_str) == Some("agent_message") {
+            let text = inner.get("message").and_then(Value::as_str)?;
+            return (!text.trim().is_empty()).then(|| text.to_owned());
+        }
+    }
+    if record.get("type").and_then(Value::as_str) != Some("assistant") {
+        return None;
+    }
+    let content = record.get("message")?.get("content")?.as_array()?;
+    let text = content
+        .iter()
+        .filter(|block| block.get("type").and_then(Value::as_str) == Some("text"))
+        .filter_map(|block| block.get("text").and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join(" ");
+    (!text.trim().is_empty()).then_some(text)
+}
+
+fn read_tail(path: &Path, limit: u64) -> Option<String> {
+    let mut file = File::open(path).ok()?;
+    let length = file.metadata().ok()?.len();
+    if length > limit {
+        file.seek(SeekFrom::Start(length - limit)).ok()?;
+    }
+    let mut buffer = Vec::with_capacity(limit.min(length) as usize);
+    file.take(limit).read_to_end(&mut buffer).ok()?;
+    Some(String::from_utf8_lossy(&buffer).into_owned())
 }
 
 fn normalize_state(event: &str, payload: &Map<String, Value>) -> Option<String> {
@@ -208,6 +286,7 @@ pub fn parse_payload(raw: &str) -> AppResult<Map<String, Value>> {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::fs;
 
     fn object(value: Value) -> Map<String, Value> {
         value.as_object().unwrap().clone()
@@ -240,6 +319,81 @@ mod tests {
             normalize_event("claude", &payload, None).unwrap().state,
             "approval"
         );
+    }
+
+    #[test]
+    fn codex_notify_payload_supplies_the_last_message() {
+        let payload = object(json!({
+            "type": "agent-turn-complete",
+            "thread-id": "thread-1",
+            "cwd": "/workspace/payments",
+            "last-assistant-message": "Added retries.\n\nAll 12 tests pass."
+        }));
+        let event = normalize_event("codex", &payload, None).unwrap();
+        assert_eq!(event.message, "Added retries. All 12 tests pass.");
+    }
+
+    #[test]
+    fn claude_transcript_yields_the_final_assistant_turn() {
+        let root = crate::storage::temporary_test_dir("transcript");
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("session.jsonl");
+        let lines = [
+            json!({"type": "assistant", "message": {"content": [{"type": "text", "text": "first"}]}}),
+            json!({"type": "user", "message": {"content": [{"type": "text", "text": "ignore me"}]}}),
+            json!({"type": "assistant", "message": {"content": [
+                {"type": "thinking", "thinking": "hidden"},
+                {"type": "text", "text": "Rebased the   train  and force pushed."}
+            ]}}),
+            // Trailing non-assistant records must not hide the answer above.
+            json!({"type": "system", "subtype": "hook"}),
+        ];
+        let body = lines
+            .iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(&path, body).unwrap();
+
+        let payload = object(json!({
+            "hook_event_name": "Stop",
+            "session_id": "claude-1",
+            "cwd": "/workspace/web",
+            "transcript_path": path.display().to_string()
+        }));
+        let event = normalize_event("claude", &payload, None).unwrap();
+        assert_eq!(event.state, "ready");
+        assert_eq!(event.message, "Rebased the train and force pushed.");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_missing_or_messageless_transcript_is_not_an_error() {
+        let payload = object(json!({
+            "hook_event_name": "Stop",
+            "session_id": "claude-2",
+            "cwd": "/workspace/web",
+            "transcript_path": "/nonexistent/transcript.jsonl"
+        }));
+        assert_eq!(
+            normalize_event("claude", &payload, None).unwrap().message,
+            ""
+        );
+    }
+
+    #[test]
+    fn a_truncated_leading_record_is_skipped() {
+        let root = crate::storage::temporary_test_dir("tail");
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("session.jsonl");
+        // Simulates the tail window slicing through the middle of a record.
+        let body = format!(
+            "e\": \"broken\"}}]}}}}\n{}\n",
+            json!({"type": "assistant", "message": {"content": [{"type": "text", "text": "intact"}]}})
+        );
+        fs::write(&path, body).unwrap();
+        assert_eq!(message_from_transcript(&path), "intact");
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

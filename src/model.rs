@@ -5,6 +5,7 @@ pub const SCHEMA_VERSION: u32 = 1;
 pub const DEFAULT_EVENT_LIMIT: usize = 200;
 pub const DEFAULT_RETENTION_DAYS: u64 = 14;
 pub const TASK_LIMIT: usize = 120;
+pub const MESSAGE_LIMIT: usize = 400;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct Event {
@@ -19,6 +20,9 @@ pub struct Event {
     pub project: String,
     pub tmux: String,
     pub task: String,
+    /// Latest assistant message, when the provider exposed one.
+    #[serde(default)]
+    pub message: String,
     pub state: String,
     pub updated_at: String,
 }
@@ -44,6 +48,8 @@ pub struct RunRecord {
     #[serde(default)]
     pub task: String,
     #[serde(default)]
+    pub message: String,
+    #[serde(default)]
     pub state: String,
     #[serde(default)]
     pub updated_at: String,
@@ -61,6 +67,7 @@ impl From<Event> for RunRecord {
             project: event.project,
             tmux: event.tmux,
             task: event.task,
+            message: event.message,
             state: event.state,
             updated_at: event.updated_at,
         }

@@ -1,0 +1,578 @@
+<!doctype html>
+<html lang="en" data-theme="auto">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>llm-watch</title>
+<style>
+  :root {
+    color-scheme: light;
+    --plane: #f9f9f7;
+    --surface: #fcfcfb;
+    --surface-sunken: #f2f1ed;
+    --ink: #0b0b0b;
+    --ink-2: #52514e;
+    --ink-muted: #898781;
+    --hairline: rgba(11, 11, 11, 0.10);
+    --rule: #e1e0d9;
+    --accent: #2a78d6;
+    --good: #0ca30c;
+    --warning: #fab219;
+    --serious: #ec835a;
+    --critical: #d03b3b;
+    --shadow: 0 1px 2px rgba(11, 11, 11, 0.05);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --plane: #0d0d0d;
+      --surface: #1a1a19;
+      --surface-sunken: #232322;
+      --ink: #ffffff;
+      --ink-2: #c3c2b7;
+      --ink-muted: #898781;
+      --hairline: rgba(255, 255, 255, 0.10);
+      --rule: #2c2c2a;
+      --accent: #3987e5;
+      --shadow: none;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --plane: #0d0d0d;
+    --surface: #1a1a19;
+    --surface-sunken: #232322;
+    --ink: #ffffff;
+    --ink-2: #c3c2b7;
+    --ink-muted: #898781;
+    --hairline: rgba(255, 255, 255, 0.10);
+    --rule: #2c2c2a;
+    --accent: #3987e5;
+    --shadow: none;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--plane);
+    color: var(--ink);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 24px 20px 64px; }
+
+  /* ---- header ---------------------------------------------------- */
+  header {
+    display: flex; flex-wrap: wrap; gap: 16px;
+    align-items: baseline; justify-content: space-between;
+    padding-bottom: 16px; margin-bottom: 24px;
+    border-bottom: 1px solid var(--rule);
+  }
+  h1 { font-size: 19px; font-weight: 620; margin: 0; letter-spacing: -0.01em; }
+  h1 span { color: var(--ink-muted); font-weight: 400; }
+  .meta { display: flex; align-items: center; gap: 14px; font-size: 13px; color: var(--ink-2); }
+
+  .link {
+    display: inline-flex; align-items: center; gap: 6px;
+    font: inherit; font-size: 13px; color: var(--ink-2);
+    background: none; border: 0; padding: 4px 6px; margin: -4px -6px;
+    border-radius: 6px; cursor: pointer;
+  }
+  .link:hover { background: var(--surface-sunken); color: var(--ink); }
+  .link:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+  .conn { display: inline-flex; align-items: center; gap: 7px; font-variant-numeric: tabular-nums; }
+  .conn::before {
+    content: ""; width: 8px; height: 8px; border-radius: 50%;
+    background: var(--good); flex: none;
+  }
+  .conn[data-live="false"]::before { background: var(--critical); animation: pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: 0.25; } }
+
+  /* ---- summary tiles ---------------------------------------------- */
+  .tiles {
+    display: grid; gap: 12px; margin-bottom: 28px;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  }
+  .tile {
+    background: var(--surface); border: 1px solid var(--hairline);
+    border-radius: 10px; padding: 14px 16px; box-shadow: var(--shadow);
+  }
+  .tile .label {
+    display: flex; align-items: center; gap: 7px;
+    font-size: 12px; font-weight: 560; letter-spacing: 0.02em;
+    text-transform: uppercase; color: var(--ink-2);
+  }
+  .tile .value { font-size: 30px; font-weight: 600; letter-spacing: -0.02em; margin-top: 6px; }
+  .tile[data-zero="true"] .value { color: var(--ink-muted); font-weight: 500; }
+
+  /* ---- state badges ------------------------------------------------ */
+  .badge {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 16px; height: 16px; border-radius: 50%; flex: none;
+    font-size: 10px; font-weight: 700; line-height: 1; color: #ffffff;
+  }
+  .badge[data-state="ready"]       { background: var(--good); }
+  .badge[data-state="approval"]    { background: var(--warning); color: #3a2800; }
+  .badge[data-state="error"]       { background: var(--critical); }
+  .badge[data-state="running"]     { background: var(--accent); }
+  .badge[data-state="idle"]        { background: var(--ink-muted); }
+  .badge[data-state="stopped"]     { background: transparent; color: var(--ink-muted); box-shadow: inset 0 0 0 1.5px var(--ink-muted); }
+  .badge[data-state="unreachable"] { background: var(--serious); color: #3a1600; }
+
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 12px; font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase;
+    white-space: nowrap;
+  }
+
+  /* ---- host cards --------------------------------------------------- */
+  .hosts { display: flex; flex-direction: column; gap: 16px; }
+  .host {
+    background: var(--surface); border: 1px solid var(--hairline);
+    border-radius: 12px; box-shadow: var(--shadow); overflow: hidden;
+  }
+  .host[data-reachable="false"] { border-color: color-mix(in srgb, var(--serious) 45%, var(--hairline)); }
+  .host-head {
+    display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center;
+    padding: 12px 16px; border-bottom: 1px solid var(--rule);
+  }
+  .host-name { font-size: 15px; font-weight: 620; letter-spacing: -0.01em; }
+  .host-verdict { font-size: 11.5px; }
+  .host-verdict[data-state="running"] { color: var(--accent); }
+  .host-verdict[data-state="idle"] { color: var(--ink-muted); }
+  .host[data-working="true"] { border-color: color-mix(in srgb, var(--accent) 40%, var(--hairline)); }
+
+  .label-chip, .label-input {
+    font: inherit; font-size: 12.5px; line-height: 1.3;
+    padding: 3px 9px; border-radius: 999px;
+    border: 1px dashed var(--rule); background: transparent; color: var(--ink-2);
+    max-width: 240px;
+  }
+  .label-chip {
+    cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    border-style: solid; background: var(--surface-sunken);
+  }
+  .label-chip[data-empty="true"] {
+    border-style: dashed; background: transparent; color: var(--ink-muted);
+  }
+  .label-chip:hover { color: var(--ink); border-color: var(--ink-muted); }
+  .label-chip:focus-visible, .label-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .label-input { color: var(--ink); background: var(--surface); min-width: 160px; }
+  .host-head .spacer { flex: 1 1 auto; }
+  .host-note { font-size: 12.5px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+  .host-note.warn { color: var(--serious); }
+  .counts { display: flex; gap: 10px; }
+  .count {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 12.5px; color: var(--ink-2); font-variant-numeric: tabular-nums;
+  }
+
+  /* ---- session rows -------------------------------------------------- */
+  .run {
+    display: grid; gap: 4px 14px; align-items: baseline;
+    grid-template-columns: 108px minmax(0, 1fr) auto;
+    padding: 11px 16px;
+  }
+  .run + .run { border-top: 1px solid var(--rule); }
+  .run[data-state="stopped"] { opacity: 0.55; }
+  .run-state { grid-column: 1; }
+  .run-state[data-state="ready"]    { color: var(--good); }
+  .run-state[data-state="approval"] { color: color-mix(in srgb, var(--warning) 80%, var(--ink)); }
+  .run-state[data-state="error"]    { color: var(--critical); }
+  .run-state[data-state="running"]  { color: var(--accent); }
+  .run-state[data-state="idle"]     { color: var(--ink-2); }
+  .run-state[data-state="stopped"]  { color: var(--ink-muted); }
+  .run-main { grid-column: 2; min-width: 0; }
+  .run-task {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .run-task.empty { color: var(--ink-muted); }
+  .run-sub {
+    display: flex; flex-wrap: wrap; gap: 4px 8px;
+    margin-top: 2px; font-size: 12.5px; color: var(--ink-2);
+  }
+  .run-sub .sep { color: var(--rule); }
+  .tag {
+    font-size: 11.5px; font-weight: 600; letter-spacing: 0.02em;
+    text-transform: uppercase; color: var(--ink-2);
+    background: var(--surface-sunken); border-radius: 4px; padding: 1px 5px;
+  }
+  .run-message {
+    margin-top: 6px; padding-left: 9px;
+    border-left: 2px solid var(--rule);
+    font-size: 13px; color: var(--ink-2);
+    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3;
+    line-clamp: 3; overflow: hidden;
+  }
+  .run-age {
+    grid-column: 3; font-size: 12.5px; color: var(--ink-muted);
+    font-variant-numeric: tabular-nums; white-space: nowrap;
+  }
+  .empty-row { padding: 14px 16px; font-size: 13.5px; color: var(--ink-muted); }
+  .error-row {
+    padding: 12px 16px; font-size: 13.5px; color: var(--ink-2);
+    background: color-mix(in srgb, var(--serious) 8%, transparent);
+  }
+  .error-row code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
+
+  footer { margin-top: 28px; font-size: 12.5px; color: var(--ink-muted); }
+
+  @media (max-width: 560px) {
+    .run { grid-template-columns: minmax(0, 1fr) auto; }
+    .run-state { grid-column: 1; }
+    .run-main { grid-column: 1 / -1; grid-row: 2; }
+    .run-age { grid-column: 2; grid-row: 1; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>llm-watch <span id="host-count"></span></h1>
+    <div class="meta">
+      <button class="link" id="toggle-stopped" type="button" aria-pressed="false">Show stopped</button>
+      <button class="link" id="toggle-theme" type="button">Theme</button>
+      <span class="conn" id="conn" data-live="false">connecting…</span>
+    </div>
+  </header>
+
+  <section class="tiles" id="tiles" aria-label="Summary"></section>
+  <main class="hosts" id="hosts"></main>
+  <footer id="footer"></footer>
+</div>
+
+<script>
+(() => {
+  "use strict";
+
+  // Glyphs pair with the text label so state is never carried by color alone.
+  // WORKING ranks first everywhere: it is the signal the dashboard exists for.
+  const STATES = {
+    running:     { label: "Working",     glyph: "◐", rank: 0 },
+    approval:    { label: "Approval",    glyph: "!", rank: 1 },
+    error:       { label: "Error",       glyph: "✕", rank: 2 },
+    ready:       { label: "Ready",       glyph: "✓", rank: 3 },
+    idle:        { label: "Idle",        glyph: "◦", rank: 4 },
+    stopped:     { label: "Stopped",     glyph: "○", rank: 5 },
+    unreachable: { label: "Unreachable", glyph: "⚠", rank: 6 },
+  };
+  // READY is deliberately absent from the headline tiles and from the per-host
+  // counts: a box is either working or it is not. Ready rows still render, so a
+  // finished session keeps its last message on screen for context.
+  const COUNTED = ["running", "approval", "error"];
+
+  const el = {
+    conn: document.getElementById("conn"),
+    tiles: document.getElementById("tiles"),
+    hosts: document.getElementById("hosts"),
+    footer: document.getElementById("footer"),
+    hostCount: document.getElementById("host-count"),
+    toggleStopped: document.getElementById("toggle-stopped"),
+    toggleTheme: document.getElementById("toggle-theme"),
+  };
+
+  let state = null;
+  let receivedAt = null;
+  let editing = null;
+  let showStopped = localStorage.getItem("llm-watch.stopped") === "true";
+
+  // The server persists to the labels config and re-broadcasts, so the new
+  // label arrives back over the event stream like any other change.
+  function saveLabel(host, label) {
+    fetch("/api/label", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ host, label }),
+    }).catch(() => {});
+  }
+
+  /* ---- helpers ------------------------------------------------------ */
+
+  const meta = (name) => STATES[name] || { label: name || "Unknown", glyph: "?", rank: 9 };
+
+  function ago(iso) {
+    if (!iso) return null;
+    const then = Date.parse(iso);
+    if (Number.isNaN(then)) return null;
+    return Math.max(0, Math.round((Date.now() - then) / 1000));
+  }
+
+  function duration(seconds) {
+    if (seconds === null) return "–";
+    if (seconds < 60) return seconds + "s";
+    if (seconds < 3600) return Math.floor(seconds / 60) + "m";
+    if (seconds < 86400) return Math.floor(seconds / 3600) + "h";
+    return Math.floor(seconds / 86400) + "d";
+  }
+
+  function badge(name) {
+    const node = document.createElement("span");
+    node.className = "badge";
+    node.dataset.state = name;
+    node.setAttribute("aria-hidden", "true");
+    node.textContent = meta(name).glyph;
+    return node;
+  }
+
+  function pill(name, className) {
+    const node = document.createElement("span");
+    node.className = className;
+    node.dataset.state = name;
+    node.append(badge(name), meta(name).label);
+    return node;
+  }
+
+  function text(tag, className, value) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (value !== undefined) node.textContent = value;
+    return node;
+  }
+
+  /* ---- render ------------------------------------------------------- */
+
+  function visibleRuns(host) {
+    return host.runs
+      .filter((run) => showStopped || run.state !== "stopped")
+      .sort((a, b) => meta(a.state).rank - meta(b.state).rank ||
+        String(b.updated_at).localeCompare(String(a.updated_at)));
+  }
+
+  const isWorking = (host) => host.runs.some((run) => run.state === "running");
+
+  function tile(name, heading, value, zero) {
+    const node = text("div", "tile");
+    node.dataset.zero = String(zero);
+    const label = text("div", "label");
+    label.append(badge(name), heading);
+    node.append(label, text("div", "value", value));
+    return node;
+  }
+
+  function renderTiles() {
+    const totals = Object.create(null);
+    let unreachable = 0;
+    let working = 0;
+    for (const host of state.hosts) {
+      if (!host.reachable) unreachable += 1;
+      if (isWorking(host)) working += 1;
+      for (const run of host.runs) totals[run.state] = (totals[run.state] || 0) + 1;
+    }
+
+    // The headline is devbox-centric: how many boxes are actually working.
+    el.tiles.replaceChildren(
+      tile("running", "Working", working + " / " + state.hosts.length, working === 0),
+      tile("approval", "Approval", String(totals.approval || 0), !totals.approval),
+      tile("error", "Error", String(totals.error || 0), !totals.error),
+      tile("unreachable", "Unreachable", unreachable + " / " + state.hosts.length, unreachable === 0),
+    );
+  }
+
+  function renderRun(run) {
+    const row = text("div", "run");
+    row.dataset.state = run.state;
+    row.append(pill(run.state, "pill run-state"));
+
+    const main = text("div", "run-main");
+    const task = text("div", "run-task", run.task || "No task recorded");
+    if (!run.task) task.classList.add("empty");
+    else task.title = run.task;
+    main.append(task);
+
+    const sub = text("div", "run-sub");
+    if (run.provider) sub.append(text("span", "tag", run.provider));
+    const facts = [run.project, run.tmux ? "tmux:" + run.tmux : "", run.cwd].filter(Boolean);
+    facts.forEach((fact, index) => {
+      if (index > 0) sub.append(text("span", "sep", "·"));
+      sub.append(text("span", null, fact));
+    });
+    main.append(sub);
+
+    // The agent's last word — the context you want when a box goes ready.
+    if (run.message) {
+      const message = text("div", "run-message", run.message);
+      message.title = run.message;
+      main.append(message);
+    }
+    row.append(main);
+
+    const age = ago(run.updated_at);
+    const stamp = text("div", "run-age", duration(age));
+    if (run.updated_at) stamp.title = "Last event " + run.updated_at;
+    row.append(stamp);
+    return row;
+  }
+
+  function labelNode(host) {
+    if (editing === host.host) {
+      const input = document.createElement("input");
+      input.className = "label-input";
+      input.value = host.label || "";
+      input.placeholder = "work stream";
+      input.maxLength = 60;
+      input.setAttribute("aria-label", "Work stream for " + host.host);
+      let settled = false;
+      const finish = (save) => {
+        if (settled) return;
+        settled = true;
+        editing = null;
+        if (save && input.value.trim() !== (host.label || "")) {
+          saveLabel(host.host, input.value.trim());
+        }
+        render(true);
+      };
+      input.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") finish(true);
+        else if (event.key === "Escape") finish(false);
+      });
+      input.addEventListener("blur", () => finish(true));
+      return input;
+    }
+    const button = text("button", "label-chip");
+    button.type = "button";
+    button.dataset.empty = String(!host.label);
+    button.textContent = host.label || "+ label";
+    button.title = "Set the work stream for " + host.host;
+    button.addEventListener("click", () => {
+      editing = host.host;
+      render(true);
+    });
+    return button;
+  }
+
+  function renderHost(host) {
+    const card = text("section", "host");
+    card.dataset.reachable = String(host.reachable);
+    const working = isWorking(host);
+    card.dataset.working = String(working);
+
+    const head = text("div", "host-head");
+    head.append(pill(working ? "running" : "idle", "pill host-verdict"));
+    head.append(text("span", "host-name", host.host));
+    head.append(labelNode(host));
+
+    const runs = visibleRuns(host);
+    const counts = text("div", "counts");
+    for (const name of COUNTED) {
+      const n = host.runs.filter((run) => run.state === name).length;
+      if (!n) continue;
+      const count = text("span", "count");
+      count.append(badge(name), n + " " + meta(name).label.toLowerCase());
+      counts.append(count);
+    }
+    head.append(counts, text("div", "spacer"));
+
+    if (host.reachable) {
+      head.append(text("span", "host-note", "polled " + duration(ago(state.generated_at)) + " ago"));
+    } else if (host.stale) {
+      const note = text("span", "host-note warn",
+        "offline · last seen " + duration(ago(host.observed_at)) + " ago");
+      head.append(note);
+    } else {
+      head.append(text("span", "host-note warn", "never reached"));
+    }
+    card.append(head);
+
+    if (!host.reachable && host.error) {
+      const row = text("div", "error-row");
+      row.append(badge("unreachable"), " ");
+      row.append(text("code", null, host.error));
+      card.append(row);
+    }
+
+    if (runs.length === 0) {
+      const hidden = host.runs.length - runs.length;
+      card.append(text("div", "empty-row", hidden > 0
+        ? "No active sessions · " + hidden + " stopped hidden"
+        : host.reachable || host.stale ? "No sessions recorded" : "No data yet"));
+    } else {
+      runs.forEach((run) => card.append(renderRun(run)));
+    }
+    return card;
+  }
+
+  // Repainting mid-edit would destroy the focused input, so background renders
+  // are held until the edit settles; `force` is the render that started it.
+  function render(force) {
+    if (!state || (editing !== null && !force)) return;
+    el.hostCount.textContent = state.hosts.length +
+      (state.hosts.length === 1 ? " devbox" : " devboxes");
+    renderTiles();
+    el.hosts.replaceChildren(...state.hosts.map(renderHost));
+    const input = el.hosts.querySelector(".label-input");
+    if (input) {
+      input.focus();
+      input.select();
+    }
+    const seen = ago(state.generated_at);
+    el.footer.textContent = "Snapshot " + state.generated_at +
+      " · polling every " + state.interval_seconds + "s" +
+      (seen !== null ? " · " + duration(seen) + " old" : "");
+  }
+
+  function setConnected(live) {
+    el.conn.dataset.live = String(live);
+    if (!live) {
+      el.conn.textContent = "reconnecting…";
+    } else {
+      const seen = receivedAt === null ? null : Math.max(0, Math.round((Date.now() - receivedAt) / 1000));
+      el.conn.textContent = seen === null ? "live" : "live · updated " + duration(seen) + " ago";
+    }
+  }
+
+  /* ---- live updates -------------------------------------------------- */
+
+  // EventSource reconnects on its own; onerror only drives the status text.
+  const source = new EventSource("/api/stream");
+  source.onmessage = (event) => {
+    try {
+      state = JSON.parse(event.data);
+    } catch {
+      return;
+    }
+    receivedAt = Date.now();
+    setConnected(true);
+    render();
+  };
+  source.onopen = () => setConnected(true);
+  source.onerror = () => setConnected(false);
+
+  // Ages are computed client-side, so tick them independently of the feed.
+  setInterval(() => {
+    if (!state) return;
+    setConnected(el.conn.dataset.live === "true");
+    render();
+  }, 1000);
+
+  /* ---- controls -------------------------------------------------------- */
+
+  function applyStoppedLabel() {
+    el.toggleStopped.textContent = showStopped ? "Hide stopped" : "Show stopped";
+    el.toggleStopped.setAttribute("aria-pressed", String(showStopped));
+  }
+  el.toggleStopped.addEventListener("click", () => {
+    showStopped = !showStopped;
+    localStorage.setItem("llm-watch.stopped", String(showStopped));
+    applyStoppedLabel();
+    render();
+  });
+  applyStoppedLabel();
+
+  const storedTheme = localStorage.getItem("llm-watch.theme");
+  if (storedTheme) document.documentElement.dataset.theme = storedTheme;
+  el.toggleTheme.addEventListener("click", () => {
+    const dark = matchMedia("(prefers-color-scheme: dark)").matches;
+    const current = document.documentElement.dataset.theme;
+    const resolved = current === "light" || current === "dark" ? current : (dark ? "dark" : "light");
+    const next = resolved === "dark" ? "light" : "dark";
+    document.documentElement.dataset.theme = next;
+    localStorage.setItem("llm-watch.theme", next);
+  });
+})();
+</script>
+</body>
+</html>

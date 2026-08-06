@@ -1,7 +1,9 @@
 mod dashboard;
 mod discovery;
 mod hooks;
+mod labels;
 mod model;
+mod server;
 mod storage;
 
 use clap::{Parser, Subcommand, ValueEnum};
@@ -10,10 +12,11 @@ use discovery::discover_hosts;
 use hooks::{normalize_event, parse_payload};
 use model::DEFAULT_EVENT_LIMIT;
 use serde_json::Map;
+use server::{serve, ServeOptions};
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::{self, IsTerminal, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::thread;
 use std::time::Duration;
@@ -58,6 +61,9 @@ enum Commands {
         hosts_file: Option<PathBuf>,
         #[arg(long)]
         ssh_config: Option<PathBuf>,
+        /// File of hosts to skip; defaults to the `ignore` file in the config directory.
+        #[arg(long)]
+        ignore_file: Option<PathBuf>,
         #[arg(long)]
         no_coder: bool,
     },
@@ -69,6 +75,9 @@ enum Commands {
         hosts_file: Option<PathBuf>,
         #[arg(long)]
         ssh_config: Option<PathBuf>,
+        /// File of hosts to skip; defaults to the `ignore` file in the config directory.
+        #[arg(long)]
+        ignore_file: Option<PathBuf>,
         #[arg(long)]
         no_coder: bool,
         #[arg(long, default_value_t = 5.0)]
@@ -83,6 +92,37 @@ enum Commands {
         all: bool,
         #[arg(long)]
         no_notify: bool,
+    },
+    /// Poll devboxes and serve a live web dashboard.
+    Serve {
+        /// SSH aliases; defaults to discovered dev* Coder workspaces.
+        hosts: Vec<String>,
+        #[arg(long)]
+        hosts_file: Option<PathBuf>,
+        #[arg(long)]
+        ssh_config: Option<PathBuf>,
+        /// File of hosts to skip; defaults to the `ignore` file in the config directory.
+        #[arg(long)]
+        ignore_file: Option<PathBuf>,
+        #[arg(long)]
+        no_coder: bool,
+        /// Address to bind. Loopback by default; anything else exposes the page to your network.
+        #[arg(long, default_value = "127.0.0.1")]
+        bind: String,
+        #[arg(long, default_value_t = 8787)]
+        port: u16,
+        #[arg(long, default_value_t = 5.0)]
+        interval: f64,
+        #[arg(long, default_value_t = 3.0)]
+        timeout: f64,
+        #[arg(long, default_value_t = DEFAULT_EVENT_LIMIT)]
+        events: usize,
+        /// Also send desktop notifications, as `dashboard` does.
+        #[arg(long)]
+        notify: bool,
+        /// Open the dashboard in the default browser once it is listening.
+        #[arg(long)]
+        open: bool,
     },
 }
 
@@ -138,9 +178,15 @@ fn run(cli: Cli) -> AppResult<u8> {
         Commands::Hosts {
             hosts_file,
             ssh_config,
+            ignore_file,
             no_coder,
         } => {
-            let hosts = discover_hosts(hosts_file.as_deref(), ssh_config.as_deref(), !no_coder);
+            let hosts = discover_hosts(
+                hosts_file.as_deref(),
+                ssh_config.as_deref(),
+                ignore_file.as_deref(),
+                !no_coder,
+            );
             for host in &hosts {
                 println!("{host}");
             }
@@ -150,6 +196,7 @@ fn run(cli: Cli) -> AppResult<u8> {
             hosts,
             hosts_file,
             ssh_config,
+            ignore_file,
             no_coder,
             interval,
             timeout,
@@ -161,6 +208,7 @@ fn run(cli: Cli) -> AppResult<u8> {
             hosts,
             hosts_file,
             ssh_config,
+            ignore_file,
             no_coder,
             interval,
             timeout,
@@ -169,7 +217,66 @@ fn run(cli: Cli) -> AppResult<u8> {
             all,
             no_notify,
         }),
+        Commands::Serve {
+            hosts,
+            hosts_file,
+            ssh_config,
+            ignore_file,
+            no_coder,
+            bind,
+            port,
+            interval,
+            timeout,
+            events,
+            notify,
+            open,
+        } => {
+            let Some(hosts) = resolve_hosts(
+                hosts,
+                hosts_file.as_deref(),
+                ssh_config.as_deref(),
+                ignore_file.as_deref(),
+                no_coder,
+            ) else {
+                return Ok(1);
+            };
+            serve(ServeOptions {
+                hosts,
+                bind,
+                port,
+                interval: Duration::from_secs_f64(interval.max(0.1)),
+                timeout: Duration::from_secs_f64(timeout.max(0.1)),
+                events,
+                notify,
+                open,
+            })
+        }
     }
+}
+
+/// Explicit aliases win; otherwise fall back to discovery. `None` means nothing to watch.
+fn resolve_hosts(
+    explicit: Vec<String>,
+    hosts_file: Option<&Path>,
+    ssh_config: Option<&Path>,
+    ignore_file: Option<&Path>,
+    no_coder: bool,
+) -> Option<Vec<String>> {
+    let mut hosts = if explicit.is_empty() {
+        discover_hosts(hosts_file, ssh_config, ignore_file, !no_coder)
+    } else {
+        explicit
+    };
+    hosts.sort();
+    hosts.dedup();
+    if hosts.is_empty() {
+        eprintln!(
+            "No dev* SSH aliases found. Add hosts to {}.",
+            config_dir().join("hosts").display()
+        );
+        return None;
+    }
+    Some(hosts)
 }
 
 fn command_hook(
@@ -220,6 +327,7 @@ struct DashboardOptions {
     hosts: Vec<String>,
     hosts_file: Option<PathBuf>,
     ssh_config: Option<PathBuf>,
+    ignore_file: Option<PathBuf>,
     no_coder: bool,
     interval: f64,
     timeout: f64,
@@ -230,25 +338,15 @@ struct DashboardOptions {
 }
 
 fn command_dashboard(options: DashboardOptions) -> AppResult<u8> {
-    let hosts = if options.hosts.is_empty() {
-        discover_hosts(
-            options.hosts_file.as_deref(),
-            options.ssh_config.as_deref(),
-            !options.no_coder,
-        )
-    } else {
-        let mut hosts = options.hosts;
-        hosts.sort();
-        hosts.dedup();
-        hosts
-    };
-    if hosts.is_empty() {
-        eprintln!(
-            "No dev* SSH aliases found. Add hosts to {}.",
-            config_dir().join("hosts").display()
-        );
+    let Some(hosts) = resolve_hosts(
+        options.hosts,
+        options.hosts_file.as_deref(),
+        options.ssh_config.as_deref(),
+        options.ignore_file.as_deref(),
+        options.no_coder,
+    ) else {
         return Ok(1);
-    }
+    };
 
     let timeout = Duration::from_secs_f64(options.timeout.max(0.1));
     let interval = Duration::from_secs_f64(options.interval.max(0.1));

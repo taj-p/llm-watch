@@ -197,6 +197,26 @@ dev-web
 coder.dev-eu
 ```
 
+To stop watching a host without deleting it from `~/.ssh/config` or shutting the
+Coder workspace down, list it in:
+
+```text
+~/.config/llm-watch/ignore
+```
+
+The format matches the `hosts` file: one entry per line, `#` starts a comment.
+Entries match a host literally, or as a glob when they contain `*` or `?`:
+
+```text
+coder.dev-eu     # retired, keep the SSH alias
+lab-*
+```
+
+The ignore list is applied after every discovery source, so it also suppresses
+entries coming from the `hosts` file. Hosts named directly on the command line
+bypass it, so `llm-watch dashboard coder.dev-eu` still works. Pass
+`--ignore-file` to use a different file.
+
 Check discovery with:
 
 ```sh
@@ -245,6 +265,80 @@ command that accepts the title and message as its final two arguments:
 ```sh
 export LLM_WATCH_NOTIFY_COMMAND="$HOME/bin/my-notifier"
 ```
+
+## Run the web dashboard
+
+For a browser view of the same data, with no page reloads:
+
+```sh
+llm-watch serve --open
+```
+
+This polls the same discovered devboxes over SSH and serves
+`http://127.0.0.1:8787/`. The browser holds a server-sent events connection, so
+every poll is pushed to the page as it completes and the tab reconnects on its
+own if the server restarts.
+
+The headline answers one question per devbox: is it working or not. The summary
+counts working boxes, then the approvals and errors that need you. `READY` is
+not counted in either — a finished session is simply a box that is not working.
+
+Below that is a card per devbox, marked `WORKING` or `IDLE`, listing its Codex
+and Claude sessions with tool, project, tmux pane, task, age, and the agent's
+last message. Working sessions sort first, then approvals and errors. Stopped
+sessions are hidden behind a toggle. An unreachable devbox keeps its last known
+sessions on screen, marked offline with the SSH error and the time it was last
+seen — the same last-known behaviour as the terminal dashboard.
+
+### Work-stream labels
+
+Each card carries a free-text label for the work stream it is on. Click the
+label on a card to edit it; press Enter to save or Escape to cancel. Labels are
+stored in `~/.config/llm-watch/labels` and shared by every open tab:
+
+```text
+coder.dev3 = lightspeed render tree
+coder.lsr-dash = depot upload PR train
+```
+
+The file can also be edited by hand — it is re-read on every poll, so changes
+appear without restarting the server. Clearing a label removes its line.
+
+### Last assistant message
+
+Each session shows the agent's most recent message, so a devbox going `READY`
+carries the context of where it got to. Codex supplies this in its `notify`
+payload; for Claude it is read from the tail of the session transcript. The
+message is captured when the hook fires and is kept through the approval and
+session events that follow, until the next completed turn replaces it.
+
+This is recorded **on the devbox**, so each devbox needs a build of `llm-watch`
+new enough to capture it. Until one is updated, its sessions simply show no
+message; nothing else is affected. Messages also only appear for turns that
+complete after the update — existing sessions stay blank until their next turn.
+
+```sh
+llm-watch serve --port 9000 --interval 10
+llm-watch serve dev-api dev-web
+```
+
+Notifications are off here, since the page is already visible; pass `--notify`
+to also get desktop notifications. Running `serve` and `dashboard` at once is
+supported — they share the notification baseline, so an event notifies once.
+
+The server binds to loopback only. `--bind 0.0.0.0` exposes the page, and
+everything on it, to your whole network; it has no authentication.
+
+Two endpoints are available if you want to build on the data:
+
+| Method | Path | Behaviour |
+|--------|------|-----------|
+| `GET` | `/api/state` | The latest poll as a JSON object |
+| `GET` | `/api/stream` | The same object pushed on every poll as `text/event-stream` |
+| `POST` | `/api/label` | `{"host": "...", "label": "..."}` sets a label; an empty label clears it |
+
+`POST /api/label` rejects a host that is not being watched, so it can only edit
+aliases already on the dashboard.
 
 ## Local commands
 

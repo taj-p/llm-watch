@@ -8,20 +8,14 @@ use std::process::Command;
 pub fn discover_hosts(
     hosts_file: Option<&Path>,
     ssh_config: Option<&Path>,
+    ignore_file: Option<&Path>,
     include_coder: bool,
 ) -> Vec<String> {
     let mut hosts = BTreeSet::new();
     let hosts_path = hosts_file
         .map(Path::to_path_buf)
         .unwrap_or_else(|| config_dir().join("hosts"));
-    if let Ok(content) = fs::read_to_string(hosts_path) {
-        for line in content.lines() {
-            let host = line.split('#').next().unwrap_or_default().trim();
-            if !host.is_empty() {
-                hosts.insert(host.to_owned());
-            }
-        }
-    }
+    hosts.extend(read_list_file(&hosts_path));
 
     let ssh_path = ssh_config
         .map(Path::to_path_buf)
@@ -31,7 +25,39 @@ pub fn discover_hosts(
     if include_coder {
         hosts.extend(discover_coder_hosts());
     }
-    hosts.into_iter().collect()
+
+    // The ignore list is applied last so it can suppress any discovery source.
+    // Hosts named explicitly on the command line never reach here.
+    let ignore_path = ignore_file
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| config_dir().join("ignore"));
+    let patterns = read_list_file(&ignore_path);
+    hosts
+        .into_iter()
+        .filter(|host| !is_ignored(host, &patterns))
+        .collect()
+}
+
+/// Reads a config list: one entry per line, `#` begins a comment.
+fn read_list_file(path: &Path) -> Vec<String> {
+    let Ok(content) = fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    content
+        .lines()
+        .filter_map(|line| {
+            let entry = line.split('#').next().unwrap_or_default().trim();
+            (!entry.is_empty()).then(|| entry.to_owned())
+        })
+        .collect()
+}
+
+/// An entry matches a host literally, or as a glob when it contains `*` or `?`.
+pub fn is_ignored(host: &str, patterns: &[String]) -> bool {
+    let host = host.to_ascii_lowercase();
+    patterns
+        .iter()
+        .any(|pattern| wildcard_matches(&pattern.to_ascii_lowercase(), &host))
 }
 
 fn parse_ssh_file(path: &Path, seen: &mut BTreeSet<PathBuf>, hosts: &mut BTreeSet<String>) {
@@ -201,8 +227,50 @@ mod tests {
         )
         .unwrap();
         fs::write(root.join("hosts"), "coder.dev-eu\ndev-ops\n").unwrap();
-        let hosts = discover_hosts(Some(&root.join("hosts")), Some(&root.join("config")), false);
+        // Every input is pinned to the fixture so the developer's own config cannot leak in.
+        fs::write(root.join("ignore"), "# nothing ignored\n").unwrap();
+        let hosts = discover_hosts(
+            Some(&root.join("hosts")),
+            Some(&root.join("config")),
+            Some(&root.join("ignore")),
+            false,
+        );
         assert_eq!(hosts, vec!["coder.dev-eu", "dev-api", "dev-ops", "dev-web"]);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn ignored_hosts_are_dropped_from_every_discovery_source() {
+        let root = std::env::temp_dir().join(format!("llm-watch-ignore-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        // coder.dev-eu arrives from the hosts file, dev-web and dev-api from ssh config.
+        fs::write(root.join("hosts"), "coder.dev-eu\ndev-ops\n").unwrap();
+        fs::write(root.join("config"), "Host dev-api dev-web\n").unwrap();
+        fs::write(
+            root.join("ignore"),
+            "# retired\ncoder.dev-eu\ndev-w*\n\n  dev-api  # trailing comment\n",
+        )
+        .unwrap();
+        let hosts = discover_hosts(
+            Some(&root.join("hosts")),
+            Some(&root.join("config")),
+            Some(&root.join("ignore")),
+            false,
+        );
+        assert_eq!(hosts, vec!["dev-ops"]);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn ignore_matching_is_literal_unless_a_glob_is_used() {
+        let patterns = vec!["coder.dev-eu".to_owned(), "lab-*".to_owned()];
+        assert!(is_ignored("coder.dev-eu", &patterns));
+        assert!(is_ignored("CODER.DEV-EU", &patterns));
+        assert!(is_ignored("lab-01", &patterns));
+        // A literal entry must not behave like a prefix.
+        assert!(!is_ignored("coder.dev-eu-2", &patterns));
+        assert!(!is_ignored("coder.dev2", &patterns));
+        assert!(!is_ignored("dev-lab-01", &patterns));
+        assert!(!is_ignored("anything", &[]));
     }
 }
