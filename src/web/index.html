@@ -218,6 +218,63 @@
 
   footer { margin-top: 28px; font-size: 12.5px; color: var(--ink-muted); }
 
+  /* ---- served-page links --------------------------------------------- */
+  .link-button {
+    display: inline-flex; align-items: center; gap: 6px;
+    font: inherit; font-size: 12.5px; line-height: 1.3;
+    padding: 3px 10px; border-radius: 999px; cursor: pointer;
+    border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--hairline));
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+    color: var(--accent);
+    max-width: 260px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .link-button:hover { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+  .link-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+  /* ---- iframe viewer --------------------------------------------------- */
+  .viewer {
+    position: fixed; inset: 0; z-index: 50;
+    display: flex; flex-direction: column; background: var(--plane);
+  }
+  .viewer[hidden] { display: none; }
+  .viewer-head {
+    display: flex; align-items: center; gap: 16px;
+    padding: 8px 14px; background: var(--surface);
+    border-bottom: 1px solid var(--rule); flex: none;
+  }
+  .viewer-tabs {
+    display: flex; gap: 6px; overflow-x: auto; flex: 1 1 auto;
+    scrollbar-width: thin;
+  }
+  .viewer-tab {
+    display: flex; align-items: baseline; gap: 7px;
+    font: inherit; font-size: 13px; line-height: 1.3;
+    padding: 6px 12px; border-radius: 8px; cursor: pointer; white-space: nowrap;
+    border: 1px solid transparent; background: transparent; color: var(--ink-2);
+  }
+  .viewer-tab:hover { background: var(--surface-sunken); color: var(--ink); }
+  .viewer-tab[aria-selected="true"] {
+    background: var(--surface-sunken); color: var(--ink);
+    border-color: var(--hairline); font-weight: 560;
+  }
+  .viewer-tab .tab-sub { font-size: 11.5px; color: var(--ink-muted); font-weight: 400; }
+  .viewer-tab .tab-key {
+    font-size: 10.5px; color: var(--ink-muted);
+    font-variant-numeric: tabular-nums; border: 1px solid var(--rule);
+    border-radius: 4px; padding: 0 4px;
+  }
+  .viewer-tab[data-ended="true"] { opacity: 0.55; text-decoration: line-through; }
+  .viewer-actions { display: flex; align-items: center; gap: 12px; flex: none; }
+  .viewer-body { flex: 1 1 auto; position: relative; background: var(--surface); }
+  .viewer-body iframe {
+    position: absolute; inset: 0; width: 100%; height: 100%; border: 0;
+  }
+  .viewer-body iframe[hidden] { display: none; }
+  .viewer-empty {
+    display: grid; place-items: center; height: 100%;
+    color: var(--ink-muted); font-size: 14px; text-align: center; padding: 24px;
+  }
+
   @media (max-width: 560px) {
     .run { grid-template-columns: minmax(0, 1fr) auto; }
     .run-state { grid-column: 1; }
@@ -243,6 +300,17 @@
   <section class="tiles" id="tiles" aria-label="Summary"></section>
   <main class="hosts" id="hosts"></main>
   <footer id="footer"></footer>
+</div>
+
+<div class="viewer" id="viewer" hidden role="dialog" aria-modal="true" aria-label="Served pages">
+  <div class="viewer-head">
+    <div class="viewer-tabs" id="viewer-tabs" role="tablist"></div>
+    <div class="viewer-actions">
+      <a class="link" id="viewer-open" href="#" target="_blank" rel="noopener">Open in new tab ↗</a>
+      <button class="link" id="viewer-close" type="button">Close ✕</button>
+    </div>
+  </div>
+  <div class="viewer-body" id="viewer-body"></div>
 </div>
 
 <script>
@@ -273,6 +341,11 @@
     hostCount: document.getElementById("host-count"),
     toggleStopped: document.getElementById("toggle-stopped"),
     toggleTheme: document.getElementById("toggle-theme"),
+    viewer: document.getElementById("viewer"),
+    viewerTabs: document.getElementById("viewer-tabs"),
+    viewerBody: document.getElementById("viewer-body"),
+    viewerOpen: document.getElementById("viewer-open"),
+    viewerClose: document.getElementById("viewer-close"),
   };
 
   let state = null;
@@ -464,6 +537,16 @@
       count.append(badge(name), n + " " + meta(name).label.toLowerCase());
       counts.append(count);
     }
+    for (const link of host.links || []) {
+      if (!/^https?:\/\//i.test(link.url)) continue;
+      const button = text("button", "link-button");
+      button.type = "button";
+      button.textContent = link.kind + (link.title ? " · " + link.title : "");
+      button.title = link.url;
+      button.addEventListener("click", () => openViewer(link.url));
+      head.append(button);
+    }
+
     head.append(counts, text("div", "spacer"));
 
     if (host.reachable) {
@@ -508,6 +591,7 @@
       input.focus();
       input.select();
     }
+    renderViewer();
     const seen = ago(state.generated_at);
     el.footer.textContent = "Snapshot " + state.generated_at +
       " · polling every " + state.interval_seconds + "s" +
@@ -523,6 +607,125 @@
       el.conn.textContent = seen === null ? "live" : "live · updated " + duration(seen) + " ago";
     }
   }
+
+  /* ---- served-page viewer ---------------------------------------------- */
+
+  // Iframes are created once and kept alive behind `hidden`, so tabbing back to
+  // a page does not reload it or lose your scroll position.
+  const viewer = { open: false, active: null, frames: new Map() };
+
+  function allLinks() {
+    const links = [];
+    for (const host of state ? state.hosts : []) {
+      for (const link of host.links || []) {
+        if (!/^https?:\/\//i.test(link.url)) continue;
+        links.push({ host: host.host, hostLabel: host.label, ...link });
+      }
+    }
+    return links;
+  }
+
+  function openViewer(url) {
+    viewer.open = true;
+    viewer.active = url;
+    el.viewer.hidden = false;
+    renderViewer();
+  }
+
+  function closeViewer() {
+    viewer.open = false;
+    el.viewer.hidden = true;
+  }
+
+  function frameFor(url) {
+    let frame = viewer.frames.get(url);
+    if (!frame) {
+      frame = document.createElement("iframe");
+      frame.src = url;
+      frame.title = url;
+      frame.referrerPolicy = "no-referrer";
+      viewer.frames.set(url, frame);
+      el.viewerBody.append(frame);
+    }
+    return frame;
+  }
+
+  function renderViewer() {
+    if (!viewer.open) return;
+    const links = allLinks();
+    // A page you are reading stays tabbable even after its tunnel goes away.
+    const known = links.map((link) => link.url);
+    if (viewer.active && !known.includes(viewer.active)) {
+      const previous = viewer.frames.get(viewer.active);
+      if (previous) {
+        links.push({
+          host: previous.dataset.host || "gone",
+          title: previous.dataset.title || "",
+          url: viewer.active,
+          ended: true,
+        });
+      }
+    }
+    if (!links.length) {
+      viewer.active = null;
+      el.viewerTabs.replaceChildren();
+      el.viewerBody.replaceChildren(
+        text("div", "viewer-empty", "No devbox is serving a page right now."));
+      viewer.frames.clear();
+      el.viewerOpen.removeAttribute("href");
+      return;
+    }
+    if (!viewer.active || !links.some((link) => link.url === viewer.active)) {
+      viewer.active = links[0].url;
+    }
+
+    el.viewerTabs.replaceChildren(...links.map((link, index) => {
+      const tab = text("button", "viewer-tab");
+      tab.type = "button";
+      tab.setAttribute("role", "tab");
+      tab.setAttribute("aria-selected", String(link.url === viewer.active));
+      if (link.ended) tab.dataset.ended = "true";
+      tab.append(text("span", null, link.hostLabel || link.host));
+      if (link.title) tab.append(text("span", "tab-sub", link.title));
+      if (index < 9) tab.append(text("span", "tab-key", String(index + 1)));
+      tab.title = link.host + " · " + link.url;
+      tab.addEventListener("click", () => {
+        viewer.active = link.url;
+        renderViewer();
+      });
+      return tab;
+    }));
+
+    const empty = el.viewerBody.querySelector(".viewer-empty");
+    if (empty) empty.remove();
+    for (const link of links) {
+      const frame = frameFor(link.url);
+      frame.dataset.host = link.host;
+      frame.dataset.title = link.title || "";
+      frame.hidden = link.url !== viewer.active;
+    }
+    el.viewerOpen.href = viewer.active;
+  }
+
+  el.viewerClose.addEventListener("click", closeViewer);
+  document.addEventListener("keydown", (event) => {
+    if (!viewer.open) return;
+    if (event.key === "Escape") {
+      closeViewer();
+      return;
+    }
+    const tabs = [...el.viewerTabs.children];
+    const current = tabs.findIndex((tab) => tab.getAttribute("aria-selected") === "true");
+    if (event.key === "ArrowRight" || event.key === "ArrowLeft") {
+      if (tabs.length < 2) return;
+      event.preventDefault();
+      const step = event.key === "ArrowRight" ? 1 : -1;
+      tabs[(current + step + tabs.length) % tabs.length].click();
+    } else if (/^[1-9]$/.test(event.key) && tabs[Number(event.key) - 1]) {
+      event.preventDefault();
+      tabs[Number(event.key) - 1].click();
+    }
+  });
 
   /* ---- live updates -------------------------------------------------- */
 

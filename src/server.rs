@@ -1,6 +1,6 @@
 use crate::dashboard::{fetch_all, process_notifications, with_last_known};
 use crate::labels::{labels_path, read_labels, sanitize, set_label};
-use crate::model::{RunRecord, Snapshot, SCHEMA_VERSION};
+use crate::model::{Link, RunRecord, Snapshot, SCHEMA_VERSION};
 use crate::storage::{utc_now, AppResult};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -56,6 +56,8 @@ struct HostView {
     error: Option<String>,
     observed_at: Option<String>,
     runs: Vec<RunRecord>,
+    /// Web UIs this devbox is currently serving, e.g. a `dfh` difit tunnel.
+    links: Vec<Link>,
 }
 
 /// Latest serialized payload plus a version other threads can wait on.
@@ -155,6 +157,7 @@ pub fn serve(options: ServeOptions) -> AppResult<u8> {
                 error: None,
                 observed_at: None,
                 runs: Vec::new(),
+                links: Vec::new(),
             })
             .collect(),
     })?);
@@ -256,6 +259,12 @@ fn build_state(
                 observed_at: known.map(|snapshot| snapshot.generated_at.clone()),
                 runs: known
                     .map(|snapshot| snapshot.runs.clone())
+                    .unwrap_or_default(),
+                // Only a live poll proves a tunnel is still up; a cached
+                // snapshot's links would send you to a dead URL.
+                links: snapshots
+                    .get(host)
+                    .map(|snapshot| snapshot.links.clone())
                     .unwrap_or_default(),
             }
         })
@@ -498,6 +507,12 @@ mod tests {
                 state: state.to_owned(),
                 ..RunRecord::default()
             }],
+            links: vec![Link {
+                id: "difit-1".to_owned(),
+                kind: "difit".to_owned(),
+                url: format!("https://{host}.example.dev"),
+                ..Link::default()
+            }],
             events: vec![],
         }
     }
@@ -529,6 +544,9 @@ mod tests {
         // An unlabelled host reports an empty label, not a missing key.
         assert_eq!(state.hosts[0].label, "");
         assert_eq!(state.hosts[1].label, "payments train");
+        // Links come only from a live poll: dev-b's cached tunnel may be dead.
+        assert_eq!(state.hosts[0].links.len(), 1);
+        assert!(state.hosts[1].links.is_empty());
     }
 
     #[test]
@@ -563,6 +581,7 @@ mod tests {
                     error: None,
                     observed_at: None,
                     runs: Vec::new(),
+                    links: Vec::new(),
                 })
                 .collect(),
         }

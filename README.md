@@ -304,6 +304,37 @@ coder.lsr-dash = depot upload PR train
 The file can also be edited by hand — it is re-read on every poll, so changes
 appear without restarting the server. Clearing a label removes its line.
 
+### Served pages
+
+A devbox can publish a web UI it is serving, and the dashboard shows it as a
+button on that devbox's card. Clicking one opens a viewer: the page fills the
+window, with a tab per published page across every devbox along the top.
+
+Tabs keep their pages loaded, so switching back does not reload or lose your
+scroll position. `←` and `→` move between tabs, `1`–`9` jump straight to one,
+`Escape` closes the viewer, and *Open in new tab* escapes to a real tab. A page
+whose tunnel goes away stays tabbable, struck through, so it does not vanish
+from under you mid-read.
+
+The `dfh` command in the dotfiles repo publishes its Highway tunnel this way.
+Anything else can do the same:
+
+```sh
+llm-watch link set --kind difit --url https://example.highway.internal --title "PR 1234"
+llm-watch link clear --kind difit
+llm-watch link list
+```
+
+Re-run `link set` at least every three minutes to keep a link alive; one that
+stops being refreshed disappears, so a killed tunnel cannot leave a dead URL on
+the dashboard. Without `--id`, a link belongs to its kind, directory, and tmux
+pane, so re-running a command in place replaces its own entry. Only `http` and
+`https` URLs are accepted, since the dashboard puts them in an iframe.
+
+Links are shown only for a devbox reached on the current poll. Unlike sessions,
+a cached link is not displayed — a tunnel from a devbox you can no longer reach
+is not one you can open.
+
 ### Last assistant message
 
 Each session shows the agent's most recent message, so a devbox going `READY`

@@ -248,7 +248,7 @@ pub fn compact_text(value: &str, limit: usize) -> String {
     format!("{}…", shortened.trim_end())
 }
 
-fn tmux_target() -> String {
+pub fn tmux_target() -> String {
     let Ok(pane) = env::var("TMUX_PANE") else {
         return String::new();
     };

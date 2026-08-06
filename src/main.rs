@@ -9,18 +9,22 @@ mod storage;
 use clap::{Parser, Subcommand, ValueEnum};
 use dashboard::{fetch_all, process_notifications, render_table, with_last_known};
 use discovery::discover_hosts;
-use hooks::{normalize_event, parse_payload};
-use model::DEFAULT_EVENT_LIMIT;
+use hooks::{compact_text, normalize_event, parse_payload, tmux_target};
+use model::{Link, DEFAULT_EVENT_LIMIT, SCHEMA_VERSION, TASK_LIMIT};
 use serde_json::Map;
 use server::{serve, ServeOptions};
 use std::collections::BTreeMap;
+use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::thread;
 use std::time::Duration;
-use storage::{config_dir, snapshot, state_dir, utc_now, write_event, AppResult};
+use storage::{
+    clear_link, config_dir, snapshot, state_dir, utc_now, write_event, write_link, AppResult,
+};
+use uuid::Uuid;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -44,6 +48,11 @@ enum Commands {
         /// Event name when it is absent from the payload.
         #[arg(long)]
         event: Option<String>,
+    },
+    /// Publish or withdraw a web UI this machine is serving.
+    Link {
+        #[command(subcommand)]
+        action: LinkAction,
     },
     /// Print this machine's state as JSON.
     Snapshot {
@@ -126,6 +135,34 @@ enum Commands {
     },
 }
 
+#[derive(Debug, Subcommand)]
+enum LinkAction {
+    /// Publish a URL, or refresh one already published. Re-run within the TTL
+    /// to keep it alive; a link that stops being refreshed disappears.
+    Set {
+        /// The URL to open. Must be http or https.
+        #[arg(long)]
+        url: String,
+        /// Stable identifier; defaults to one derived from kind, cwd, and tmux pane.
+        #[arg(long)]
+        id: Option<String>,
+        #[arg(long, default_value = "link")]
+        kind: String,
+        /// Shown on the dashboard; defaults to the directory name.
+        #[arg(long)]
+        title: Option<String>,
+    },
+    /// Withdraw a published URL.
+    Clear {
+        #[arg(long)]
+        id: Option<String>,
+        #[arg(long, default_value = "link")]
+        kind: String,
+    },
+    /// Print the live links on this machine.
+    List,
+}
+
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum Provider {
     Codex,
@@ -161,6 +198,7 @@ fn run(cli: Cli) -> AppResult<u8> {
             command_hook(provider, payload, event.as_deref());
             Ok(0)
         }
+        Commands::Link { action } => command_link(action),
         Commands::Snapshot { events } => {
             println!("{}", serde_json::to_string(&snapshot(events)?)?);
             Ok(0)
@@ -277,6 +315,74 @@ fn resolve_hosts(
         return None;
     }
     Some(hosts)
+}
+
+/// The dashboard puts these URLs in an iframe `src` and an anchor `href`, so
+/// only http and https are accepted — never `javascript:` or `data:`.
+fn checked_url(url: &str) -> AppResult<String> {
+    let url = url.trim();
+    let lower = url.to_ascii_lowercase();
+    if !lower.starts_with("http://") && !lower.starts_with("https://") {
+        return Err(format!("url must start with http:// or https://, got {url:?}").into());
+    }
+    if url.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return Err("url must not contain whitespace or control characters".into());
+    }
+    Ok(url.to_owned())
+}
+
+/// Without an explicit id, a link belongs to its kind, directory, and tmux
+/// pane, so re-running the same command in place replaces its own entry.
+fn derived_link_id(kind: &str, cwd: &str) -> String {
+    let seed = format!("{kind}|{cwd}|{}", env::var("TMUX_PANE").unwrap_or_default());
+    format!(
+        "{kind}-{}",
+        Uuid::new_v5(&Uuid::NAMESPACE_URL, seed.as_bytes())
+    )
+}
+
+fn command_link(action: LinkAction) -> AppResult<u8> {
+    let cwd = env::current_dir()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|_| ".".to_owned());
+    match action {
+        LinkAction::Set {
+            url,
+            id,
+            kind,
+            title,
+        } => {
+            let url = checked_url(&url)?;
+            let project = Path::new(&cwd)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or(&cwd)
+                .to_owned();
+            let link = Link {
+                schema_version: SCHEMA_VERSION,
+                id: id.unwrap_or_else(|| derived_link_id(&kind, &cwd)),
+                kind: kind.clone(),
+                url,
+                title: compact_text(&title.unwrap_or_else(|| project.clone()), TASK_LIMIT),
+                cwd: cwd.clone(),
+                project,
+                tmux: tmux_target(),
+                updated_at: utc_now(),
+            };
+            write_link(&link)?;
+            Ok(0)
+        }
+        LinkAction::Clear { id, kind } => {
+            clear_link(&id.unwrap_or_else(|| derived_link_id(&kind, &cwd)))?;
+            Ok(0)
+        }
+        LinkAction::List => {
+            for link in snapshot(0)?.links {
+                println!("{}\t{}\t{}", link.kind, link.title, link.url);
+            }
+            Ok(0)
+        }
+    }
 }
 
 fn command_hook(

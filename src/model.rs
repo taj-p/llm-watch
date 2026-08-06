@@ -6,6 +6,9 @@ pub const DEFAULT_EVENT_LIMIT: usize = 200;
 pub const DEFAULT_RETENTION_DAYS: u64 = 14;
 pub const TASK_LIMIT: usize = 120;
 pub const MESSAGE_LIMIT: usize = 400;
+/// A published link is dropped once its owner stops refreshing it, so a crashed
+/// or killed command cannot leave a dead URL on the dashboard.
+pub const LINK_TTL_SECONDS: i64 = 180;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct Event {
@@ -74,6 +77,30 @@ impl From<Event> for RunRecord {
     }
 }
 
+/// A web UI a devbox is currently serving, such as a `dfh` Highway tunnel.
+/// Published by a command while it runs and dropped once it stops refreshing.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub struct Link {
+    #[serde(default = "schema_version")]
+    pub schema_version: u32,
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub cwd: String,
+    #[serde(default)]
+    pub project: String,
+    #[serde(default)]
+    pub tmux: String,
+    #[serde(default)]
+    pub updated_at: String,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct Snapshot {
     pub schema_version: u32,
@@ -81,6 +108,8 @@ pub struct Snapshot {
     pub generated_at: String,
     #[serde(default)]
     pub runs: Vec<RunRecord>,
+    #[serde(default)]
+    pub links: Vec<Link>,
     #[serde(default)]
     pub events: Vec<Event>,
 }

@@ -1,4 +1,6 @@
-use crate::model::{Event, RunRecord, Snapshot, DEFAULT_RETENTION_DAYS, SCHEMA_VERSION};
+use crate::model::{
+    Event, Link, RunRecord, Snapshot, DEFAULT_RETENTION_DAYS, LINK_TTL_SECONDS, SCHEMA_VERSION,
+};
 use chrono::{DateTime, Utc};
 use fs2::FileExt;
 use serde::de::DeserializeOwned;
@@ -192,10 +194,54 @@ pub fn write_event(event: &Event) -> AppResult<RunRecord> {
     write_event_at(event, &state_dir())
 }
 
+fn link_path(root: &Path, id: &str) -> PathBuf {
+    root.join("links").join(format!("{}.json", safe_name(id)))
+}
+
+pub fn write_link_at(link: &Link, root: &Path) -> AppResult<()> {
+    with_lock(root, || atomic_json(&link_path(root, &link.id), link))
+}
+
+pub fn write_link(link: &Link) -> AppResult<()> {
+    write_link_at(link, &state_dir())
+}
+
+/// Removing a link that was never published is not an error; callers clear on
+/// exit without knowing whether the set succeeded.
+pub fn clear_link_at(id: &str, root: &Path) -> AppResult<()> {
+    with_lock(root, || match fs::remove_file(link_path(root, id)) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    })
+}
+
+pub fn clear_link(id: &str) -> AppResult<()> {
+    clear_link_at(id, &state_dir())
+}
+
+/// Live links only: an entry whose owner stopped refreshing is treated as gone.
+fn read_live_links(root: &Path) -> AppResult<Vec<Link>> {
+    let mut links = read_directory::<Link>(&root.join("links"))?;
+    links.retain(|link| {
+        !link.url.is_empty()
+            && parse_time(&link.updated_at)
+                .is_some_and(|at| (Utc::now() - at).num_seconds() <= LINK_TTL_SECONDS)
+    });
+    links.sort_by(|left, right| {
+        left.kind
+            .cmp(&right.kind)
+            .then_with(|| left.title.cmp(&right.title))
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    Ok(links)
+}
+
 pub fn snapshot_at(root: &Path, event_limit: usize) -> AppResult<Snapshot> {
     with_lock(root, || {
         let mut runs = read_directory::<RunRecord>(&root.join("runs"))?;
         runs.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+        let links = read_live_links(root)?;
 
         let mut event_paths = directory_paths(&root.join("events"))?;
         event_paths.sort();
@@ -211,6 +257,7 @@ pub fn snapshot_at(root: &Path, event_limit: usize) -> AppResult<Snapshot> {
             host: short_host(),
             generated_at: utc_now(),
             runs,
+            links,
             events,
         })
     })
@@ -332,6 +379,42 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["event-1", "event-2"]
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn link(id: &str, url: &str, updated_at: &str) -> Link {
+        Link {
+            schema_version: SCHEMA_VERSION,
+            id: id.to_owned(),
+            kind: "difit".to_owned(),
+            url: url.to_owned(),
+            title: "canva".to_owned(),
+            cwd: "/home/coder/work/canva".to_owned(),
+            project: "canva".to_owned(),
+            tmux: "main:1.1".to_owned(),
+            updated_at: updated_at.to_owned(),
+        }
+    }
+
+    #[test]
+    fn links_expire_once_they_stop_being_refreshed() {
+        let root = temporary_test_dir("links");
+        let stale = (Utc::now() - Duration::from_secs(LINK_TTL_SECONDS as u64 + 60))
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+
+        write_link_at(&link("fresh", "https://a.example.dev", &utc_now()), &root).unwrap();
+        write_link_at(&link("stale", "https://b.example.dev", &stale), &root).unwrap();
+        // A record with no timestamp at all must not be treated as live.
+        write_link_at(&link("undated", "https://c.example.dev", ""), &root).unwrap();
+
+        let live = snapshot_at(&root, 0).unwrap().links;
+        assert_eq!(live.len(), 1);
+        assert_eq!(live[0].id, "fresh");
+
+        // Clearing is idempotent, so an exit trap can always run it.
+        clear_link_at("fresh", &root).unwrap();
+        clear_link_at("fresh", &root).unwrap();
+        assert!(snapshot_at(&root, 0).unwrap().links.is_empty());
         let _ = fs::remove_dir_all(root);
     }
 

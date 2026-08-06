@@ -364,6 +364,7 @@ mod tests {
             host: "dev".into(),
             generated_at: utc_now(),
             runs: vec![],
+            links: vec![],
             events: vec![],
         };
         let output = format!("Welcome\n{}\n", serde_json::to_string(&snapshot).unwrap());
@@ -380,6 +381,7 @@ mod tests {
                 state: "stopped".into(),
                 ..RunRecord::default()
             }],
+            links: vec![],
             events: vec![],
         };
         let table = render_table(
