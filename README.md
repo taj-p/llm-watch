@@ -304,6 +304,34 @@ coder.lsr-dash = depot upload PR train
 The file can also be edited by hand — it is re-read on every poll, so changes
 appear without restarting the server. Clearing a label removes its line.
 
+### Attached pull requests
+
+Beside the label, a card carries the GitHub pull requests that work is for.
+Click `+ PR`, paste a link, and press Enter; Escape cancels. Each PR becomes a
+chip reading `repo #number` that opens the PR in a new tab, with an `×` to
+detach it. Up to eight fit on a card.
+
+Paste any pull request URL — a `/files` or `/commits` view, query string and
+fragment included — and it is stored canonically, so the same PR pasted from
+two tabs stays one chip. `owner/repo#123` shorthand works too, and an
+Enterprise host such as `https://github.example.dev/eng/tools/pull/7` is kept
+as it is. Anything that is not a pull request link is refused, and the card
+says so.
+
+Attachments live in `~/.config/llm-watch/prs`, shared by every open tab, one
+line per PR:
+
+```text
+coder.dev3 = https://github.com/canva/canva/pull/1234
+coder.dev3 = https://github.com/canva/tools/pull/77
+coder.lsr-dash = https://github.com/canva/canva/pull/1280
+```
+
+Like the labels file it is re-read on every poll and can be edited by hand,
+though only full URLs work there — `#` starts a comment, so the shorthand is
+for the dashboard and the API. Unlike served pages, these are yours rather than
+the devbox's, so a card keeps showing its PRs while the box is unreachable.
+
 ### Served pages
 
 A devbox can publish a web UI it is serving, and the dashboard shows it as a
@@ -334,6 +362,27 @@ pane, so re-running a command in place replaces its own entry. Only `http` and
 Links are shown only for a devbox reached on the current poll. Unlike sessions,
 a cached link is not displayed — a tunnel from a devbox you can no longer reach
 is not one you can open.
+
+### Jump to a devbox terminal
+
+Every card carries a `WezTerm ↗` button. Clicking it raises WezTerm on that
+devbox's tab, so a card that needs attention is one click from the session
+itself rather than a hunt through tabs.
+
+Tabs are matched by title: the dashboard looks for a tab titled with the same
+SSH alias it shows on the card. The `wezterm.lua` in the dotfiles repo titles
+each devbox tab that way when it opens them, so this works with no extra
+configuration. A tab you opened by hand has no title and will not be matched.
+
+Nothing is ever spawned. If no tab carries that alias the button says so — `no
+WezTerm tab`, or `WezTerm not running` — and leaves your terminal alone. The
+raise step uses macOS `open`; elsewhere the tab is still activated, you just
+have to bring the window forward yourself.
+
+The button posts to the local server, which is what runs `wezterm cli`. That
+endpoint, and the label and pull request endpoints beside it, reject any POST
+carrying a cross-origin `Origin` header, so a page you happen to be visiting
+cannot drive your terminal.
 
 ### Last assistant message
 
@@ -367,9 +416,11 @@ Two endpoints are available if you want to build on the data:
 | `GET` | `/api/state` | The latest poll as a JSON object |
 | `GET` | `/api/stream` | The same object pushed on every poll as `text/event-stream` |
 | `POST` | `/api/label` | `{"host": "...", "label": "..."}` sets a label; an empty label clears it |
+| `POST` | `/api/pr` | `{"host": "...", "url": "..."}` attaches a pull request; `"action": "remove"` detaches it |
 
-`POST /api/label` rejects a host that is not being watched, so it can only edit
-aliases already on the dashboard.
+Both `POST` endpoints reject a host that is not being watched, so they can only
+edit aliases already on the dashboard. `/api/pr` answers with the host's full
+list of attachments, and refuses a URL that is not a pull request.
 
 ## Local commands
 

@@ -1,7 +1,9 @@
 use crate::dashboard::{fetch_all, process_notifications, with_last_known};
 use crate::labels::{labels_path, read_labels, sanitize, set_label};
 use crate::model::{Link, RunRecord, Snapshot, SCHEMA_VERSION};
+use crate::prs::{add_pr, prs_path, read_prs, remove_pr, PullRequest, PR_LIMIT};
 use crate::storage::{utc_now, AppResult};
+use crate::wezterm::focus_host;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
@@ -17,6 +19,9 @@ const HEARTBEAT: Duration = Duration::from_secs(15);
 const MAX_CONNECTIONS: usize = 64;
 const MAX_REQUEST_LINE: u64 = 8 * 1024;
 const MAX_BODY_BYTES: usize = 4 * 1024;
+/// Bounds the `wezterm cli` calls: this runs on a connection thread, and the CLI
+/// can hang against a wedged mux.
+const FOCUS_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub struct ServeOptions {
     pub hosts: Vec<String>,
@@ -36,6 +41,20 @@ struct LabelRequest {
     label: String,
 }
 
+#[derive(Deserialize)]
+struct FocusRequest {
+    host: String,
+}
+
+#[derive(Deserialize)]
+struct PrRequest {
+    host: String,
+    url: String,
+    /// `remove` detaches; anything else attaches.
+    #[serde(default)]
+    action: String,
+}
+
 #[derive(Clone, Serialize)]
 struct StateView {
     schema_version: u32,
@@ -49,6 +68,8 @@ struct HostView {
     host: String,
     /// Free-text work-stream marker from the labels config.
     label: String,
+    /// GitHub pull requests attached to this devbox, from the prs config.
+    prs: Vec<PullRequest>,
     /// True when this cycle's SSH poll succeeded.
     reachable: bool,
     /// True when the rows come from the last known snapshot instead of this cycle.
@@ -112,6 +133,42 @@ impl Broadcast {
         Ok(true)
     }
 
+    /// Replaces one host's attached pull requests. Returns false when the host
+    /// is not one of the watched aliases.
+    fn apply_prs(&self, host: &str, prs: Vec<PullRequest>) -> AppResult<bool> {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let Some(entry) = state.view.hosts.iter_mut().find(|view| view.host == host) else {
+            return Ok(false);
+        };
+        entry.prs = prs;
+        let payload = serde_json::to_string(&state.view)?;
+        state.version += 1;
+        state.payload = Arc::new(payload);
+        drop(state);
+        self.changed.notify_all();
+        Ok(true)
+    }
+
+    /// False once a host is at the per-card limit. Re-adding a PR it already
+    /// carries is a no-op rather than an overflow.
+    fn accepts_pr(&self, host: &str, url: &str) -> bool {
+        let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        state
+            .view
+            .hosts
+            .iter()
+            .find(|view| view.host == host)
+            .is_some_and(|view| {
+                view.prs.len() < PR_LIMIT || view.prs.iter().any(|pr| pr.url == url)
+            })
+    }
+
+    /// True when the host is one of the watched aliases.
+    fn is_watched(&self, host: &str) -> bool {
+        let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        state.view.hosts.iter().any(|view| view.host == host)
+    }
+
     fn current(&self) -> (u64, Arc<String>) {
         let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         (state.version, state.payload.clone())
@@ -143,6 +200,7 @@ pub fn serve(options: ServeOptions) -> AppResult<u8> {
     let hosts = Arc::new(options.hosts);
     let interval = options.interval;
     let labels = read_labels(&labels_path());
+    let prs = read_prs(&prs_path());
     let broadcast = Arc::new(Broadcast::new(StateView {
         schema_version: SCHEMA_VERSION,
         generated_at: utc_now(),
@@ -152,6 +210,7 @@ pub fn serve(options: ServeOptions) -> AppResult<u8> {
             .map(|host| HostView {
                 host: host.clone(),
                 label: labels.get(host).cloned().unwrap_or_default(),
+                prs: prs.get(host).cloned().unwrap_or_default(),
                 reachable: false,
                 stale: false,
                 error: None,
@@ -230,10 +289,11 @@ fn poll_once(
     let (snapshots, errors) = fetch_all(hosts, timeout, events);
     process_notifications(&snapshots, notify)?;
     let displayed = with_last_known(&snapshots, hosts);
-    // Re-read every cycle so edits to the labels file land without a restart.
+    // Re-read every cycle so hand edits to the config land without a restart.
     let labels = read_labels(&labels_path());
+    let prs = read_prs(&prs_path());
     Ok(build_state(
-        hosts, &snapshots, &displayed, &errors, &labels, interval,
+        hosts, &snapshots, &displayed, &errors, &labels, &prs, interval,
     ))
 }
 
@@ -243,6 +303,7 @@ fn build_state(
     displayed: &BTreeMap<String, Snapshot>,
     errors: &BTreeMap<String, String>,
     labels: &BTreeMap<String, String>,
+    prs: &BTreeMap<String, Vec<PullRequest>>,
     interval: Duration,
 ) -> StateView {
     let hosts = hosts
@@ -253,6 +314,9 @@ fn build_state(
             HostView {
                 host: host.clone(),
                 label: labels.get(host).cloned().unwrap_or_default(),
+                // Unlike links, these are yours rather than the devbox's, so an
+                // unreachable box keeps showing them.
+                prs: prs.get(host).cloned().unwrap_or_default(),
                 reachable: fresh,
                 stale: !fresh && known.is_some(),
                 error: errors.get(host).cloned(),
@@ -283,8 +347,23 @@ fn handle_connection(mut stream: TcpStream, broadcast: &Broadcast) {
     };
     let path = request.path.split('?').next().unwrap_or("/").to_owned();
     if request.method == "POST" {
+        // These routes act on the laptop, so a page you happen to be visiting must
+        // not be able to drive them.
+        if !same_origin(&request) {
+            let _ = write_simple(
+                &mut stream,
+                "403 Forbidden",
+                "text/plain; charset=utf-8",
+                b"cross-origin request",
+            );
+            return;
+        }
         if path == "/api/label" {
             handle_label(&mut stream, broadcast, &request.body);
+        } else if path == "/api/pr" {
+            handle_pr(&mut stream, broadcast, &request.body);
+        } else if path == "/api/focus" {
+            handle_focus(&mut stream, broadcast, &request.body);
         } else {
             let _ = write_simple(
                 &mut stream,
@@ -337,6 +416,8 @@ fn handle_connection(mut stream: TcpStream, broadcast: &Broadcast) {
 struct Request {
     method: String,
     path: String,
+    host: Option<String>,
+    origin: Option<String>,
     body: Vec<u8>,
 }
 
@@ -349,6 +430,8 @@ fn read_request(stream: &TcpStream) -> Option<Request> {
     let path = parts.next()?.to_owned();
 
     let mut length = 0usize;
+    let mut host = None;
+    let mut origin = None;
     loop {
         let mut header = String::new();
         match reader.read_line(&mut header) {
@@ -356,8 +439,14 @@ fn read_request(stream: &TcpStream) -> Option<Request> {
             Ok(_) if header.trim().is_empty() => break,
             Ok(_) => {
                 if let Some((name, value)) = header.split_once(':') {
-                    if name.trim().eq_ignore_ascii_case("content-length") {
-                        length = value.trim().parse().unwrap_or(0);
+                    let name = name.trim();
+                    let value = value.trim();
+                    if name.eq_ignore_ascii_case("content-length") {
+                        length = value.parse().unwrap_or(0);
+                    } else if name.eq_ignore_ascii_case("host") {
+                        host = Some(value.to_owned());
+                    } else if name.eq_ignore_ascii_case("origin") {
+                        origin = Some(value.to_owned());
                     }
                 }
             }
@@ -373,7 +462,30 @@ fn read_request(stream: &TcpStream) -> Option<Request> {
             .read_to_end(&mut body)
             .ok()?;
     }
-    Some(Request { method, path, body })
+    Some(Request {
+        method,
+        path,
+        host,
+        origin,
+        body,
+    })
+}
+
+/// A POST is refused when it carries an `Origin` from somewhere other than the
+/// dashboard itself. A missing `Origin` is allowed so `curl` and scripts keep
+/// working; browsers always send one on POST, which is the case being defended:
+/// a cross-origin `fetch` with a plain content type is a "simple request" and
+/// never faces a CORS preflight.
+fn same_origin(request: &Request) -> bool {
+    let Some(origin) = request.origin.as_deref() else {
+        return true;
+    };
+    let Some(host) = request.host.as_deref() else {
+        return false;
+    };
+    origin
+        .split_once("://")
+        .is_some_and(|(_, authority)| authority == host)
 }
 
 fn handle_label(stream: &mut TcpStream, broadcast: &Broadcast, body: &[u8]) {
@@ -415,6 +527,110 @@ fn handle_label(stream: &mut TcpStream, broadcast: &Broadcast, body: &[u8]) {
         return;
     }
     let body = serde_json::json!({ "host": request.host, "label": label }).to_string();
+    let _ = write_simple(
+        stream,
+        "200 OK",
+        "application/json; charset=utf-8",
+        body.as_bytes(),
+    );
+}
+
+/// Attaches or detaches one GitHub pull request. The body of a rejection is
+/// shown verbatim on the card, so each message is short and lowercase.
+fn handle_pr(stream: &mut TcpStream, broadcast: &Broadcast, body: &[u8]) {
+    let Ok(request) = serde_json::from_slice::<PrRequest>(body) else {
+        let _ = write_simple(
+            stream,
+            "400 Bad Request",
+            "text/plain; charset=utf-8",
+            b"expected {\"host\":\"...\",\"url\":\"...\"}",
+        );
+        return;
+    };
+    // Reject unknown hosts so a stray request cannot append to the config.
+    if !broadcast.is_watched(&request.host) {
+        let _ = write_simple(
+            stream,
+            "404 Not Found",
+            "text/plain; charset=utf-8",
+            b"unknown host",
+        );
+        return;
+    }
+    let Some(pr) = crate::prs::parse(&request.url) else {
+        let _ = write_simple(
+            stream,
+            "400 Bad Request",
+            "text/plain; charset=utf-8",
+            b"not a GitHub PR link",
+        );
+        return;
+    };
+    let removing = request.action == "remove";
+    if !removing && !broadcast.accepts_pr(&request.host, &pr.url) {
+        let _ = write_simple(
+            stream,
+            "400 Bad Request",
+            "text/plain; charset=utf-8",
+            format!("at most {PR_LIMIT} PRs per devbox").as_bytes(),
+        );
+        return;
+    }
+    let path = prs_path();
+    let updated = if removing {
+        remove_pr(&path, &request.host, &pr)
+    } else {
+        add_pr(&path, &request.host, &pr)
+    };
+    let updated = match updated {
+        Ok(updated) => updated,
+        Err(error) => {
+            eprintln!("llm-watch: could not save pull request: {error}");
+            let _ = write_simple(
+                stream,
+                "500 Internal Server Error",
+                "text/plain; charset=utf-8",
+                b"could not save PR",
+            );
+            return;
+        }
+    };
+    let body = serde_json::json!({ "host": request.host, "prs": updated }).to_string();
+    if let Err(error) = broadcast.apply_prs(&request.host, updated) {
+        eprintln!("llm-watch: could not publish pull request: {error}");
+    }
+    let _ = write_simple(
+        stream,
+        "200 OK",
+        "application/json; charset=utf-8",
+        body.as_bytes(),
+    );
+}
+
+/// Every expected outcome is a 200 carrying a `status`, so the page switches on
+/// one field instead of on status codes.
+fn handle_focus(stream: &mut TcpStream, broadcast: &Broadcast, body: &[u8]) {
+    let Ok(request) = serde_json::from_slice::<FocusRequest>(body) else {
+        let _ = write_simple(
+            stream,
+            "400 Bad Request",
+            "text/plain; charset=utf-8",
+            b"expected {\"host\":\"...\"}",
+        );
+        return;
+    };
+    // A host that is not on the dashboard never reaches the shell.
+    if !broadcast.is_watched(&request.host) {
+        let _ = write_simple(
+            stream,
+            "404 Not Found",
+            "text/plain; charset=utf-8",
+            b"unknown host",
+        );
+        return;
+    }
+    let focus = focus_host(&request.host, FOCUS_TIMEOUT);
+    let body = serde_json::json!({ "host": request.host, "status": focus.status() }).to_string();
     let _ = write_simple(
         stream,
         "200 OK",
@@ -528,12 +744,17 @@ mod tests {
         let errors = BTreeMap::from([("dev-b".to_owned(), "SSH timed out".to_owned())]);
 
         let labels = BTreeMap::from([("dev-b".to_owned(), "payments train".to_owned())]);
+        let prs = BTreeMap::from([(
+            "dev-b".to_owned(),
+            vec![crate::prs::parse("canva/canva#7").unwrap()],
+        )]);
         let state = build_state(
             &hosts,
             &fresh,
             &displayed,
             &errors,
             &labels,
+            &prs,
             Duration::from_secs_f64(5.0),
         );
 
@@ -547,6 +768,9 @@ mod tests {
         // Links come only from a live poll: dev-b's cached tunnel may be dead.
         assert_eq!(state.hosts[0].links.len(), 1);
         assert!(state.hosts[1].links.is_empty());
+        // Attached PRs are yours, so an offline box keeps showing them.
+        assert!(state.hosts[0].prs.is_empty());
+        assert_eq!(state.hosts[1].prs[0].number, 7);
     }
 
     #[test]
@@ -557,6 +781,7 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &BTreeMap::from([("dev-new".to_owned(), "connection refused".to_owned())]),
+            &BTreeMap::new(),
             &BTreeMap::new(),
             Duration::from_secs_f64(5.0),
         );
@@ -576,6 +801,7 @@ mod tests {
                 .map(|host| HostView {
                     host: (*host).to_owned(),
                     label: String::new(),
+                    prs: Vec::new(),
                     reachable: true,
                     stale: false,
                     error: None,
@@ -622,5 +848,73 @@ mod tests {
         // An unknown host must not mutate or bump anything.
         assert!(!broadcast.apply_label("dev-nope", "x").unwrap());
         assert_eq!(broadcast.current().0, next);
+    }
+
+    #[test]
+    fn a_pull_request_edit_republishes_and_is_bounded_per_host() {
+        let broadcast = Broadcast::new(view(&["dev-a"])).unwrap();
+        let (version, _) = broadcast.current();
+
+        let pr = crate::prs::parse("https://github.com/canva/canva/pull/12").unwrap();
+        assert!(broadcast.apply_prs("dev-a", vec![pr.clone()]).unwrap());
+        let (next, payload) = broadcast.current();
+        assert_eq!(next, version + 1, "viewers are woken without a new poll");
+        assert!(payload.contains("/canva/canva/pull/12"));
+
+        assert!(!broadcast.apply_prs("dev-nope", vec![pr.clone()]).unwrap());
+        assert_eq!(
+            broadcast.current().0,
+            next,
+            "an unknown host changes nothing"
+        );
+
+        assert!(broadcast.accepts_pr("dev-a", &pr.url));
+        let full = (1..=PR_LIMIT)
+            .map(|number| crate::prs::parse(&format!("canva/canva#{number}")).unwrap())
+            .collect::<Vec<_>>();
+        broadcast.apply_prs("dev-a", full).unwrap();
+        // A full card still accepts one it already carries: that add is a no-op.
+        assert!(!broadcast.accepts_pr("dev-a", &pr.url));
+        assert!(broadcast.accepts_pr("dev-a", "https://github.com/canva/canva/pull/1"));
+    }
+
+    #[test]
+    fn only_watched_hosts_can_be_focused() {
+        let broadcast = Broadcast::new(view(&["dev-a"])).unwrap();
+        assert!(broadcast.is_watched("dev-a"));
+        assert!(!broadcast.is_watched("dev-nope"));
+    }
+
+    fn post(host: Option<&str>, origin: Option<&str>) -> Request {
+        Request {
+            method: "POST".to_owned(),
+            path: "/api/focus".to_owned(),
+            host: host.map(str::to_owned),
+            origin: origin.map(str::to_owned),
+            body: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn cross_origin_posts_are_refused_but_scripts_still_work() {
+        // The page itself.
+        assert!(same_origin(&post(
+            Some("127.0.0.1:8787"),
+            Some("http://127.0.0.1:8787")
+        )));
+        // A page you happened to visit, which a browser always labels.
+        assert!(!same_origin(&post(
+            Some("127.0.0.1:8787"),
+            Some("http://evil.test")
+        )));
+        // Same host, different port is still a different origin.
+        assert!(!same_origin(&post(
+            Some("127.0.0.1:8787"),
+            Some("http://127.0.0.1:9999")
+        )));
+        // `null` (a sandboxed frame) has no authority to match.
+        assert!(!same_origin(&post(Some("127.0.0.1:8787"), Some("null"))));
+        // curl and scripts send no Origin at all.
+        assert!(same_origin(&post(Some("127.0.0.1:8787"), None)));
     }
 }

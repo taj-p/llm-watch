@@ -3,8 +3,10 @@ mod discovery;
 mod hooks;
 mod labels;
 mod model;
+mod prs;
 mod server;
 mod storage;
+mod wezterm;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use dashboard::{fetch_all, process_notifications, render_table, with_last_known};

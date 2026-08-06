@@ -81,6 +81,22 @@
   .link:hover { background: var(--surface-sunken); color: var(--ink); }
   .link:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
+  .icon-button {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 28px; height: 28px; padding: 0; margin: -4px -4px -4px 0;
+    border: 0; border-radius: 7px; background: none; cursor: pointer;
+    color: var(--ink-muted);
+  }
+  .icon-button:hover { background: var(--surface-sunken); color: var(--ink); }
+  .icon-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .icon-button[aria-pressed="true"] { color: var(--warning); }
+  .icon-button[aria-pressed="true"]:hover { color: var(--warning); background: color-mix(in srgb, var(--warning) 14%, transparent); }
+  .icon-button:disabled { opacity: 0.35; cursor: default; }
+  .icon-button:disabled:hover { background: none; color: var(--ink-muted); }
+  .icon-button svg { display: block; width: 17px; height: 17px; }
+  .icon-button .rays { opacity: 0; }
+  .icon-button[aria-pressed="true"] .rays { opacity: 1; }
+
   .conn { display: inline-flex; align-items: center; gap: 7px; font-variant-numeric: tabular-nums; }
   .conn::before {
     content: ""; width: 8px; height: 8px; border-radius: 50%;
@@ -159,6 +175,30 @@
   .label-chip:hover { color: var(--ink); border-color: var(--ink-muted); }
   .label-chip:focus-visible, .label-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   .label-input { color: var(--ink); background: var(--surface); min-width: 160px; }
+  .label-input.wide { min-width: 250px; max-width: 320px; }
+
+  /* ---- attached pull requests --------------------------------------- */
+  /* A chip is a real link: GitHub refuses to be framed, so these leave the
+     dashboard rather than opening in the served-page viewer. */
+  .pr-chip {
+    display: inline-flex; align-items: center; max-width: 240px;
+    font-size: 12.5px; line-height: 1.3;
+    border: 1px solid var(--hairline); border-radius: 999px;
+    background: var(--surface-sunken);
+  }
+  .pr-chip a {
+    padding: 3px 4px 3px 10px; color: var(--ink-2); text-decoration: none;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .pr-chip a:hover { color: var(--accent); }
+  .pr-chip .pr-repo { color: var(--ink-muted); }
+  .pr-drop {
+    font: inherit; font-size: 13px; line-height: 1; cursor: pointer;
+    padding: 3px 8px 4px 4px; border: 0; border-radius: 999px;
+    background: none; color: var(--ink-muted);
+  }
+  .pr-drop:hover { color: var(--critical); }
+  .pr-chip a:focus-visible, .pr-drop:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   .host-head .spacer { flex: 1 1 auto; }
   .host-note { font-size: 12.5px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
   .host-note.warn { color: var(--serious); }
@@ -171,7 +211,7 @@
   /* ---- session rows -------------------------------------------------- */
   .run {
     display: grid; gap: 4px 14px; align-items: baseline;
-    grid-template-columns: 108px minmax(0, 1fr) auto;
+    grid-template-columns: 108px minmax(0, 1fr) auto 20px;
     padding: 11px 16px;
   }
   .run + .run { border-top: 1px solid var(--rule); }
@@ -209,6 +249,29 @@
     grid-column: 3; font-size: 12.5px; color: var(--ink-muted);
     font-variant-numeric: tabular-nums; white-space: nowrap;
   }
+
+  /* A settled row you have read and no longer want on screen. The slot is held
+     open on every row so ages stay in one column whether or not it is there. */
+  .run-dismiss { grid-column: 4; align-self: start; }
+  .run-drop {
+    display: block; width: 20px; height: 20px; padding: 0;
+    font: inherit; font-size: 14px; line-height: 1; cursor: pointer;
+    border: 0; border-radius: 5px; background: none; color: var(--ink-muted);
+    opacity: 0; transition: opacity 80ms ease-out;
+  }
+  .run:hover .run-drop, .run-drop:focus-visible { opacity: 1; }
+  .run-drop:hover { color: var(--critical); background: var(--surface-sunken); }
+  .run-drop:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  /* Nothing hovers on a touch screen, so the button is simply always there. */
+  @media (hover: none) { .run-drop { opacity: 1; } }
+
+  .count-restore {
+    font: inherit; font-size: 12.5px; color: var(--ink-muted);
+    background: none; border: 0; padding: 0; cursor: pointer;
+    text-decoration: underline dotted; text-underline-offset: 2px;
+  }
+  .count-restore:hover { color: var(--ink); }
+  .count-restore:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
   .empty-row { padding: 14px 16px; font-size: 13.5px; color: var(--ink-muted); }
   .error-row {
     padding: 12px 16px; font-size: 13.5px; color: var(--ink-2);
@@ -230,6 +293,16 @@
   }
   .link-button:hover { background: color-mix(in srgb, var(--accent) 16%, transparent); }
   .link-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+  /* Secondary to a served-page link: it acts on this laptop, not on a devbox. */
+  .link-button.muted {
+    border-color: var(--hairline);
+    background: transparent;
+    color: var(--ink-muted);
+  }
+  .link-button.muted:hover { background: color-mix(in srgb, var(--ink-muted) 10%, transparent); }
+  .link-button.muted:focus-visible { outline-color: var(--ink-muted); }
+  .link-button.muted[data-note="true"] { color: var(--serious); border-color: color-mix(in srgb, var(--serious) 40%, var(--hairline)); }
 
   /* ---- iframe viewer --------------------------------------------------- */
   .viewer {
@@ -276,10 +349,11 @@
   }
 
   @media (max-width: 560px) {
-    .run { grid-template-columns: minmax(0, 1fr) auto; }
+    .run { grid-template-columns: minmax(0, 1fr) auto 20px; }
     .run-state { grid-column: 1; }
     .run-main { grid-column: 1 / -1; grid-row: 2; }
     .run-age { grid-column: 2; grid-row: 1; }
+    .run-dismiss { grid-column: 3; grid-row: 1; }
   }
   @media (prefers-reduced-motion: reduce) {
     * { animation: none !important; transition: none !important; }
@@ -294,6 +368,17 @@
       <button class="link" id="toggle-stopped" type="button" aria-pressed="false">Show stopped</button>
       <button class="link" id="toggle-theme" type="button">Theme</button>
       <span class="conn" id="conn" data-live="false">connecting…</span>
+      <button class="icon-button" id="toggle-wake" type="button" aria-pressed="false"
+              aria-label="Keep the screen awake" title="Keep the screen awake">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 4a5.5 5.5 0 0 0-3.2 9.98c.5.36.9 1 .9 1.7v.32h4.6v-.32c0-.7.4-1.34.9-1.7A5.5 5.5 0 0 0 12 4Z"/>
+          <path d="M9.7 18.4h4.6M10.7 21h2.6"/>
+          <g class="rays">
+            <path d="M12 .9v1.5M3.9 4.6l1.1 1.1M20.1 4.6l-1.1 1.1M1 12.7h1.5M21.5 12.7H23"/>
+          </g>
+        </svg>
+      </button>
     </div>
   </header>
 
@@ -332,6 +417,9 @@
   // counts: a box is either working or it is not. Ready rows still render, so a
   // finished session keeps its last message on screen for context.
   const COUNTED = ["running", "approval", "error"];
+  // Only settled rows can be waved away. A box that is working, waiting on you,
+  // or broken is the whole point of the dashboard and stays put.
+  const DISMISSIBLE = new Set(["ready", "idle"]);
 
   const el = {
     conn: document.getElementById("conn"),
@@ -341,6 +429,7 @@
     hostCount: document.getElementById("host-count"),
     toggleStopped: document.getElementById("toggle-stopped"),
     toggleTheme: document.getElementById("toggle-theme"),
+    toggleWake: document.getElementById("toggle-wake"),
     viewer: document.getElementById("viewer"),
     viewerTabs: document.getElementById("viewer-tabs"),
     viewerBody: document.getElementById("viewer-body"),
@@ -350,8 +439,78 @@
 
   let state = null;
   let receivedAt = null;
+  // The one chip being edited, as `{ host, field }` — a label or a PR link.
   let editing = null;
   let showStopped = localStorage.getItem("llm-watch.stopped") === "true";
+
+  const isEditing = (host, field) =>
+    editing !== null && editing.host === host && editing.field === field;
+
+  /* ---- dismissed rows ------------------------------------------------ */
+
+  // Dismissing a row records the run exactly as it stood; the row comes back the
+  // moment that stamp no longer matches, which is to say on its next event. The
+  // map survives a reload, because a page left up on a second screen reloads for
+  // reasons that have nothing to do with wanting those rows back.
+  const DISMISS_KEY = "llm-watch.dismissed";
+  const dismissed = new Map(readDismissed());
+
+  function readDismissed() {
+    try {
+      const stored = JSON.parse(localStorage.getItem(DISMISS_KEY) || "[]");
+      if (!Array.isArray(stored)) return [];
+      return stored.filter((entry) =>
+        Array.isArray(entry) && entry.length === 2 &&
+        typeof entry[0] === "string" && typeof entry[1] === "string");
+    } catch {
+      return [];
+    }
+  }
+
+  function writeDismissed() {
+    try {
+      localStorage.setItem(DISMISS_KEY, JSON.stringify([...dismissed]));
+    } catch {
+      // A full or blocked store only costs the dismissals their persistence.
+    }
+  }
+
+  const runKey = (host, run) => host + "|" + (run.run_id || run.session_id || run.tmux || "");
+  // State rides along with the timestamp so a row also returns if a snapshot
+  // reports a new state without moving the clock.
+  const runStamp = (run) => run.state + "@" + run.updated_at;
+
+  const isDismissed = (host, run) => dismissed.get(runKey(host, run)) === runStamp(run);
+
+  function dismissRun(host, run) {
+    dismissed.set(runKey(host, run), runStamp(run));
+    writeDismissed();
+    render(true);
+  }
+
+  function restoreHost(host) {
+    for (const run of host.runs) dismissed.delete(runKey(host.host, run));
+    writeDismissed();
+    render(true);
+  }
+
+  // Runs disappear for good when a session is reaped, so drop their entries
+  // rather than letting the store grow for the life of the browser profile.
+  function pruneDismissed() {
+    if (!state || !dismissed.size) return;
+    const alive = new Set();
+    for (const host of state.hosts) {
+      for (const run of host.runs) alive.add(runKey(host.host, run));
+    }
+    let dropped = false;
+    for (const key of [...dismissed.keys()]) {
+      if (!alive.has(key)) {
+        dismissed.delete(key);
+        dropped = true;
+      }
+    }
+    if (dropped) writeDismissed();
+  }
 
   // The server persists to the labels config and re-broadcasts, so the new
   // label arrives back over the event stream like any other change.
@@ -361,6 +520,54 @@
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ host, label }),
     }).catch(() => {});
+  }
+
+  // Attaches or detaches a PR the same way. A rejection carries a short
+  // sentence — "not a GitHub PR link" — which is what the card shows.
+  function savePr(host, url, action) {
+    fetch("/api/pr", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ host, url, action }),
+    })
+      .then((response) => (response.ok ? null : response.text().catch(() => "")))
+      .catch(() => "could not reach llm-watch")
+      .then((note) => {
+        if (note === null) return;
+        prNote.set(host, { text: note.trim() || "could not save PR", until: Date.now() + 5000 });
+        render(true);
+        // A poll may not land before the note expires, so clear it ourselves.
+        setTimeout(() => render(), 5100);
+      });
+  }
+
+  // Focus outcomes are not part of the broadcast state, and every push rebuilds
+  // the cards — so a message written onto the button would be wiped within a
+  // second. Park it here instead, keyed by host, and let renderHost read it back.
+  const focusNote = new Map();
+  // Same idea for a refused PR link, shown beside that card's chips.
+  const prNote = new Map();
+  const FOCUS_NOTES = {
+    no_tab: "no WezTerm tab",
+    not_running: "WezTerm not running",
+    not_installed: "wezterm not found",
+  };
+
+  function focusHost(host) {
+    fetch("/api/focus", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ host }),
+    })
+      .then((response) => (response.ok ? response.json() : { status: "failed" }))
+      .catch(() => ({ status: "failed" }))
+      .then((result) => {
+        const note = result.status === "activated" ? null : FOCUS_NOTES[result.status] || "failed";
+        if (note) focusNote.set(host, { text: note, until: Date.now() + 4000 });
+        render(true);
+        // A poll may not land before the note expires, so clear it ourselves.
+        if (note) setTimeout(() => render(), 4100);
+      });
   }
 
   /* ---- helpers ------------------------------------------------------ */
@@ -410,7 +617,7 @@
 
   function visibleRuns(host) {
     return host.runs
-      .filter((run) => showStopped || run.state !== "stopped")
+      .filter((run) => (showStopped || run.state !== "stopped") && !isDismissed(host.host, run))
       .sort((a, b) => meta(a.state).rank - meta(b.state).rank ||
         String(b.updated_at).localeCompare(String(a.updated_at)));
   }
@@ -445,7 +652,20 @@
     );
   }
 
-  function renderRun(run) {
+  function dismissNode(host, run) {
+    const slot = text("div", "run-dismiss");
+    if (!DISMISSIBLE.has(run.state)) return slot;
+    const button = text("button", "run-drop", "×");
+    button.type = "button";
+    const what = run.task || run.project || "this session";
+    button.title = "Hide until this session updates";
+    button.setAttribute("aria-label", "Hide " + what + " on " + host + " until it updates");
+    button.addEventListener("click", () => dismissRun(host, run));
+    slot.append(button);
+    return slot;
+  }
+
+  function renderRun(host, run) {
     const row = text("div", "run");
     row.dataset.state = run.state;
     row.append(pill(run.state, "pill run-state"));
@@ -476,12 +696,12 @@
     const age = ago(run.updated_at);
     const stamp = text("div", "run-age", duration(age));
     if (run.updated_at) stamp.title = "Last event " + run.updated_at;
-    row.append(stamp);
+    row.append(stamp, dismissNode(host, run));
     return row;
   }
 
   function labelNode(host) {
-    if (editing === host.host) {
+    if (isEditing(host.host, "label")) {
       const input = document.createElement("input");
       input.className = "label-input";
       input.value = host.label || "";
@@ -511,9 +731,88 @@
     button.textContent = host.label || "+ label";
     button.title = "Set the work stream for " + host.host;
     button.addEventListener("click", () => {
-      editing = host.host;
+      editing = { host: host.host, field: "label" };
       render(true);
     });
+    return button;
+  }
+
+  // A PR you are working on, kept beside the label so a card says what the box
+  // is doing and where the review of it lives.
+  function prChip(host, pr) {
+    const chip = text("span", "pr-chip");
+    const link = document.createElement("a");
+    link.href = pr.url;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.title = pr.owner + "/" + pr.repo + " #" + pr.number + " · " + pr.url;
+    link.append(text("span", "pr-repo", pr.repo + " "), text("span", null, "#" + pr.number));
+
+    const drop = text("button", "pr-drop", "×");
+    drop.type = "button";
+    drop.title = "Detach this PR from " + host;
+    drop.setAttribute("aria-label", "Detach " + pr.repo + " #" + pr.number + " from " + host);
+    drop.addEventListener("click", () => savePr(host, pr.url, "remove"));
+
+    chip.append(link, drop);
+    return chip;
+  }
+
+  function prAddNode(host) {
+    if (isEditing(host.host, "pr")) {
+      const input = document.createElement("input");
+      input.className = "label-input wide";
+      input.placeholder = "GitHub PR link or owner/repo#123";
+      input.maxLength = 300;
+      input.setAttribute("aria-label", "Attach a GitHub pull request to " + host.host);
+      let settled = false;
+      const finish = (save) => {
+        if (settled) return;
+        settled = true;
+        editing = null;
+        const url = input.value.trim();
+        if (save && url) savePr(host.host, url, "add");
+        render(true);
+      };
+      input.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") finish(true);
+        else if (event.key === "Escape") finish(false);
+      });
+      input.addEventListener("blur", () => finish(true));
+      return input;
+    }
+    const button = text("button", "label-chip", "+ PR");
+    button.type = "button";
+    button.dataset.empty = "true";
+    button.title = "Attach a GitHub pull request to " + host.host;
+    button.addEventListener("click", () => {
+      editing = { host: host.host, field: "pr" };
+      render(true);
+    });
+    return button;
+  }
+
+  function prNodes(host) {
+    const nodes = (host.prs || []).map((pr) => prChip(host.host, pr));
+    nodes.push(prAddNode(host));
+    const note = prNote.get(host.host);
+    if (note && note.until <= Date.now()) prNote.delete(host.host);
+    else if (note) nodes.push(text("span", "host-note warn", note.text));
+    return nodes;
+  }
+
+  // Raises the local WezTerm on this devbox's tab. The tab is matched by title,
+  // so this only finds tabs opened by the wezterm.lua startup handler.
+  function wezterm(host) {
+    const note = focusNote.get(host);
+    if (note && note.until <= Date.now()) focusNote.delete(host);
+    const fresh = focusNote.get(host);
+    const button = text("button", "link-button muted");
+    button.type = "button";
+    button.dataset.note = String(Boolean(fresh));
+    button.textContent = fresh ? fresh.text : "WezTerm ↗";
+    button.title = fresh ? fresh.text : "Jump to the WezTerm tab for " + host;
+    button.addEventListener("click", () => focusHost(host));
     return button;
   }
 
@@ -527,6 +826,7 @@
     head.append(pill(working ? "running" : "idle", "pill host-verdict"));
     head.append(text("span", "host-name", host.host));
     head.append(labelNode(host));
+    head.append(...prNodes(host));
 
     const runs = visibleRuns(host);
     const counts = text("div", "counts");
@@ -537,6 +837,16 @@
       count.append(badge(name), n + " " + meta(name).label.toLowerCase());
       counts.append(count);
     }
+    // Dismissing is meant to be cheap, which it only is if it is reversible
+    // without waiting on the box to say something.
+    const hushed = host.runs.filter((run) => isDismissed(host.host, run)).length;
+    if (hushed) {
+      const restore = text("button", "count-restore", hushed + " dismissed");
+      restore.type = "button";
+      restore.title = "Show the dismissed sessions on " + host.host + " again";
+      restore.addEventListener("click", () => restoreHost(host));
+      counts.append(restore);
+    }
     for (const link of host.links || []) {
       if (!/^https?:\/\//i.test(link.url)) continue;
       const button = text("button", "link-button");
@@ -546,6 +856,7 @@
       button.addEventListener("click", () => openViewer(link.url));
       head.append(button);
     }
+    head.append(wezterm(host.host));
 
     head.append(counts, text("div", "spacer"));
 
@@ -568,12 +879,18 @@
     }
 
     if (runs.length === 0) {
-      const hidden = host.runs.length - runs.length;
-      card.append(text("div", "empty-row", hidden > 0
-        ? "No active sessions · " + hidden + " stopped hidden"
+      const stopped = showStopped
+        ? 0
+        : host.runs.filter((run) => run.state === "stopped").length;
+      const hidden = [
+        stopped ? stopped + " stopped" : "",
+        hushed ? hushed + " dismissed" : "",
+      ].filter(Boolean);
+      card.append(text("div", "empty-row", hidden.length
+        ? "No active sessions · " + hidden.join(", ") + " hidden"
         : host.reachable || host.stale ? "No sessions recorded" : "No data yet"));
     } else {
-      runs.forEach((run) => card.append(renderRun(run)));
+      runs.forEach((run) => card.append(renderRun(host.host, run)));
     }
     return card;
   }
@@ -738,6 +1055,7 @@
       return;
     }
     receivedAt = Date.now();
+    pruneDismissed();
     setConnected(true);
     render();
   };
@@ -775,6 +1093,64 @@
     document.documentElement.dataset.theme = next;
     localStorage.setItem("llm-watch.theme", next);
   });
+
+  /* ---- screen wake lock -------------------------------------------------- */
+
+  // The dashboard is meant to be left up on a second screen, so the lightbulb
+  // holds a screen wake lock and the laptop stays awake to show it. Browsers
+  // drop the lock whenever the tab is hidden, hence the visibilitychange retake.
+  // The API is secure-context only: over plain http to a LAN address it is
+  // absent, and the button says so rather than silently doing nothing.
+  // Deliberately not remembered across loads: holding a laptop awake is a
+  // decision about right now, and a reload should not silently re-take it.
+  const wake = { want: false, lock: null };
+  localStorage.removeItem("llm-watch.wake");
+
+  function paintWake(note) {
+    el.toggleWake.setAttribute("aria-pressed", String(wake.want));
+    const title = note || (wake.want ? "Screen stays awake — click to release" : "Keep the screen awake");
+    el.toggleWake.title = title;
+    el.toggleWake.setAttribute("aria-label", title);
+  }
+
+  async function acquireWake() {
+    if (wake.lock !== null || document.visibilityState !== "visible") return;
+    try {
+      wake.lock = await navigator.wakeLock.request("screen");
+      wake.lock.addEventListener("release", () => { wake.lock = null; });
+      paintWake();
+    } catch {
+      // Refused — a hidden tab, or a battery saver. Drop the intent rather than
+      // leaving the bulb lit over a lock we do not hold.
+      wake.want = false;
+      paintWake("could not keep the screen awake");
+    }
+  }
+
+  function releaseWake() {
+    const lock = wake.lock;
+    wake.lock = null;
+    if (lock) lock.release().catch(() => {});
+  }
+
+  if (!("wakeLock" in navigator)) {
+    wake.want = false;
+    el.toggleWake.disabled = true;
+    paintWake("screen wake lock needs https or localhost");
+  } else {
+    el.toggleWake.addEventListener("click", () => {
+      wake.want = !wake.want;
+      paintWake();
+      if (wake.want) acquireWake();
+      else releaseWake();
+    });
+    // Within a single load the intent outlives the lock, which browsers drop
+    // whenever the tab goes away — so coming back re-takes it.
+    document.addEventListener("visibilitychange", () => {
+      if (wake.want) acquireWake();
+    });
+    paintWake();
+  }
 })();
 </script>
 </body>

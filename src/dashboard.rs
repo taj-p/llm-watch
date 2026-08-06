@@ -79,7 +79,10 @@ fn parse_snapshot_output(output: &[u8]) -> Result<Snapshot, String> {
     Err("invalid snapshot response".to_owned())
 }
 
-fn output_with_timeout(command: &mut Command, timeout: Duration) -> Result<Output, String> {
+pub(crate) fn output_with_timeout(
+    command: &mut Command,
+    timeout: Duration,
+) -> Result<Output, String> {
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = command.spawn().map_err(|error| error.to_string())?;
     let stdout = child.stdout.take().ok_or("could not capture stdout")?;
@@ -338,7 +341,7 @@ fn notify(title: &str, message: &str) {
     }
 }
 
-fn command_exists(command: &str) -> bool {
+pub(crate) fn command_exists(command: &str) -> bool {
     let path = Path::new(command);
     if path.components().count() > 1 {
         return path.is_file();
