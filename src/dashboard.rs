@@ -4,6 +4,7 @@ use crate::storage::{atomic_json, parse_time, read_json_if_exists, state_dir, ut
 use chrono::Utc;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
+use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -44,15 +45,7 @@ fn fetch_snapshot(
     timeout: Duration,
     event_limit: usize,
 ) -> (String, Result<Snapshot, String>) {
-    let mut command = Command::new("ssh");
-    command.args([
-        "-o",
-        "BatchMode=yes",
-        "-o",
-        &format!("ConnectTimeout={}", timeout.as_secs().max(1)),
-        host,
-        &format!("~/.local/bin/llm-watch snapshot --events {event_limit}"),
-    ]);
+    let mut command = snapshot_command(host, timeout, event_limit, control_dir().as_deref());
     let result = match output_with_timeout(&mut command, timeout + Duration::from_secs(2)) {
         Ok(output) if output.status.success() => parse_snapshot_output(&output.stdout),
         Ok(output) => {
@@ -67,6 +60,65 @@ fn fetch_snapshot(
         Err(error) => Err(error),
     };
     (host.to_owned(), result)
+}
+
+/// Directory holding the poller's SSH control sockets. The poller owns its own
+/// multiplexing rather than relying on the user's ssh config: repeat polls skip
+/// the (Coder) proxy handshake, and a wedged socket only ever affects the
+/// dashboard, never the user's interactive sessions.
+fn control_dir() -> Option<PathBuf> {
+    let dir = state_dir().join("ssh");
+    fs::create_dir_all(&dir).ok()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
+    }
+    Some(dir)
+}
+
+fn snapshot_command(
+    host: &str,
+    timeout: Duration,
+    event_limit: usize,
+    control_dir: Option<&Path>,
+) -> Command {
+    let mut command = Command::new("ssh");
+    command.args([
+        "-o",
+        "BatchMode=yes",
+        // A status poll needs no tunnels, and inherited forwardings are
+        // actively harmful with multiplexing: the master would squat on the
+        // user's forwarding ports, and a mux client whose re-request of them
+        // fails falls back to a full (slow) connection.
+        "-o",
+        "ClearAllForwardings=yes",
+        "-o",
+        &format!("ConnectTimeout={}", timeout.as_secs().max(1)),
+    ]);
+    if let Some(dir) = control_dir {
+        // %C is a hash of the connection endpoints, keeping the socket path
+        // under the unix-socket length limit whatever the host alias is.
+        // The keepalives make a master whose network went away exit within
+        // ~10s instead of wedging every poll until ControlPersist expires.
+        command.args([
+            "-o",
+            "ControlMaster=auto",
+            "-o",
+            &format!("ControlPath={}", dir.join("%C").display()),
+            "-o",
+            "ControlPersist=10m",
+            "-o",
+            "ServerAliveInterval=5",
+            "-o",
+            "ServerAliveCountMax=2",
+        ]);
+    }
+    command.args([
+        host,
+        &format!("~/.local/bin/llm-watch snapshot --events {event_limit}"),
+    ]);
+    command
 }
 
 fn parse_snapshot_output(output: &[u8]) -> Result<Snapshot, String> {
@@ -359,6 +411,42 @@ pub fn status_line() -> String {
 mod tests {
     use super::*;
     use crate::model::{RunRecord, SCHEMA_VERSION};
+
+    #[test]
+    fn snapshot_command_multiplexes_only_with_a_control_dir() {
+        let args = |command: &Command| {
+            command
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+        };
+
+        let plain = args(&snapshot_command(
+            "coder.dev2",
+            Duration::from_secs(3),
+            25,
+            None,
+        ));
+        assert!(plain.contains(&"BatchMode=yes".to_owned()));
+        assert!(plain.contains(&"ClearAllForwardings=yes".to_owned()));
+        assert!(plain.contains(&"ConnectTimeout=3".to_owned()));
+        assert!(!plain.iter().any(|arg| arg.starts_with("ControlMaster")));
+        // Host comes right before the remote command, after all the options.
+        assert_eq!(plain[plain.len() - 2], "coder.dev2");
+        assert!(plain[plain.len() - 1].contains("snapshot --events 25"));
+
+        let muxed = args(&snapshot_command(
+            "coder.dev2",
+            Duration::from_secs(3),
+            25,
+            Some(Path::new("/tmp/llm-watch/ssh")),
+        ));
+        assert!(muxed.contains(&"ControlMaster=auto".to_owned()));
+        assert!(muxed.contains(&"ControlPath=/tmp/llm-watch/ssh/%C".to_owned()));
+        assert!(muxed.contains(&"ControlPersist=10m".to_owned()));
+        assert!(muxed.contains(&"ServerAliveInterval=5".to_owned()));
+        assert_eq!(muxed[muxed.len() - 2], "coder.dev2");
+    }
 
     #[test]
     fn remote_banner_is_ignored() {
