@@ -104,6 +104,17 @@ hooks already present in that file.
         ]
       }
     ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "llm-watch hook claude",
+            "timeout": 2
+          }
+        ]
+      }
+    ],
     "Notification": [
       {
         "matcher": "permission_prompt",
@@ -166,6 +177,11 @@ hooks already present in that file.
 ```
 
 Run `/hooks` in Claude Code to confirm that the hooks are loaded.
+
+`PostToolUse` keeps the dashboard honest about turns Claude Code starts on its
+own — background tasks finishing re-invoke the agent without a
+`UserPromptSubmit`, and subagents keep working after `Stop`. Tool activity
+refreshes the run to RUNNING without being added to the event feed.
 
 Hook failures are recorded in
 `~/.local/state/llm-watch/hook-errors.log` and always return success so a

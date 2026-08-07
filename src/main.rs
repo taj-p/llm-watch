@@ -11,7 +11,7 @@ mod wezterm;
 use clap::{Parser, Subcommand, ValueEnum};
 use dashboard::{fetch_all, process_notifications, render_table, with_last_known};
 use discovery::discover_hosts;
-use hooks::{compact_text, normalize_event, parse_payload, tmux_target};
+use hooks::{compact_text, is_activity, normalize_event, parse_payload, tmux_target};
 use model::{Link, DEFAULT_EVENT_LIMIT, SCHEMA_VERSION, TASK_LIMIT};
 use serde_json::Map;
 use server::{serve, ServeOptions};
@@ -24,7 +24,8 @@ use std::process::ExitCode;
 use std::thread;
 use std::time::Duration;
 use storage::{
-    clear_link, config_dir, snapshot, state_dir, utc_now, write_event, write_link, AppResult,
+    clear_link, config_dir, snapshot, state_dir, utc_now, write_activity, write_event, write_link,
+    AppResult,
 };
 use uuid::Uuid;
 
@@ -408,7 +409,11 @@ fn command_hook(
             parse_payload(&raw)?
         };
         if let Some(event) = normalize_event(provider.as_str(), &payload, explicit_event) {
-            write_event(&event)?;
+            if is_activity(&event.event) {
+                write_activity(&event)?;
+            } else {
+                write_event(&event)?;
+            }
         }
         Ok(())
     })();

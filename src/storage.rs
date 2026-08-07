@@ -154,28 +154,33 @@ fn with_lock<T>(root: &Path, operation: impl FnOnce() -> AppResult<T>) -> AppRes
     result
 }
 
+/// Must be called under the state lock.
+fn update_run(event: &Event, root: &Path) -> AppResult<RunRecord> {
+    let run_path = root
+        .join("runs")
+        .join(format!("{}.json", safe_name(&event.run_id)));
+    let previous: Option<RunRecord> = read_json_if_exists(&run_path);
+    let mut run = RunRecord::from(event.clone());
+    if let Some(previous) = previous {
+        if run.task.is_empty() {
+            run.task = previous.task;
+        }
+        if run.tmux.is_empty() {
+            run.tmux = previous.tmux;
+        }
+        // Only a completed turn carries a message; keep it through the
+        // approval and session events that follow.
+        if run.message.is_empty() {
+            run.message = previous.message;
+        }
+    }
+    atomic_json(&run_path, &run)?;
+    Ok(run)
+}
+
 pub fn write_event_at(event: &Event, root: &Path) -> AppResult<RunRecord> {
     let result = with_lock(root, || {
-        let run_path = root
-            .join("runs")
-            .join(format!("{}.json", safe_name(&event.run_id)));
-        let previous: Option<RunRecord> = read_json_if_exists(&run_path);
-        let mut run = RunRecord::from(event.clone());
-        if let Some(previous) = previous {
-            if run.task.is_empty() {
-                run.task = previous.task;
-            }
-            if run.tmux.is_empty() {
-                run.tmux = previous.tmux;
-            }
-            // Only a completed turn carries a message; keep it through the
-            // approval and session events that follow.
-            if run.message.is_empty() {
-                run.message = previous.message;
-            }
-        }
-        atomic_json(&run_path, &run)?;
-
+        let run = update_run(event, root)?;
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -192,6 +197,17 @@ pub fn write_event_at(event: &Event, root: &Path) -> AppResult<RunRecord> {
 
 pub fn write_event(event: &Event) -> AppResult<RunRecord> {
     write_event_at(event, &state_dir())
+}
+
+/// Refreshes the run's state without touching the event log. Activity
+/// heartbeats fire on every tool call: appended as events they would drown the
+/// feed, and pruning on each one would rescan the directory constantly.
+pub fn write_activity_at(event: &Event, root: &Path) -> AppResult<RunRecord> {
+    with_lock(root, || update_run(event, root))
+}
+
+pub fn write_activity(event: &Event) -> AppResult<RunRecord> {
+    write_activity_at(event, &state_dir())
 }
 
 fn link_path(root: &Path, id: &str) -> PathBuf {
@@ -378,6 +394,33 @@ mod tests {
                 .map(|event| event.event_id.as_str())
                 .collect::<Vec<_>>(),
             vec!["event-1", "event-2"]
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn activity_refreshes_the_run_but_stays_out_of_the_event_log() {
+        let root = temporary_test_dir("activity");
+        write_event_at(
+            &message_event("event-1", "ready", "Fix the tests", "All green."),
+            &root,
+        )
+        .unwrap();
+        write_activity_at(&event("beat-1", "running", ""), &root).unwrap();
+        let result = snapshot_at(&root, 10).unwrap();
+        assert_eq!(result.runs.len(), 1);
+        assert_eq!(result.runs[0].state, "running");
+        // The heartbeat merges like any event: task and message survive.
+        assert_eq!(result.runs[0].task, "Fix the tests");
+        assert_eq!(result.runs[0].message, "All green.");
+        // But the event feed still only carries the real lifecycle event.
+        assert_eq!(
+            result
+                .events
+                .iter()
+                .map(|event| event.event_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["event-1"]
         );
         let _ = fs::remove_dir_all(root);
     }

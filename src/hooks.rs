@@ -23,6 +23,7 @@ pub fn normalize_event(
         .or_else(|| string_field(payload, &["hook_event_name", "hookEventName", "type"]))
         .unwrap_or_else(|| "unknown".to_owned());
     let state = normalize_state(&event, payload)?;
+    let activity = is_activity(&event);
     let cwd = string_field(payload, &["cwd"])
         .or_else(|| {
             env::current_dir()
@@ -45,7 +46,7 @@ pub fn normalize_event(
         .ok()
         .map(|value| compact_text(&value, TASK_LIMIT))
         .unwrap_or_default();
-    if task.is_empty() && state == "running" {
+    if task.is_empty() && state == "running" && !activity {
         task = task_from_payload(
             payload,
             &["prompt", "input", "input_messages", "input-messages"],
@@ -60,7 +61,13 @@ pub fn normalize_event(
         .unwrap_or(&cwd)
         .to_owned();
 
-    let message = last_assistant_message(payload);
+    // An activity heartbeat mid-turn has no finished answer to show, and paying
+    // the transcript read on every tool call would not be worth it anyway.
+    let message = if activity {
+        String::new()
+    } else {
+        last_assistant_message(payload)
+    };
 
     Some(Event {
         schema_version: SCHEMA_VERSION,
@@ -149,10 +156,21 @@ fn read_tail(path: &Path, limit: u64) -> Option<String> {
     Some(String::from_utf8_lossy(&buffer).into_owned())
 }
 
+/// Tool-use heartbeats: they prove the agent is working (including turns
+/// resumed by background tasks, which never fire UserPromptSubmit), but fire
+/// far too often to append to the event log.
+pub fn is_activity(event: &str) -> bool {
+    matches!(
+        normalized_name(event).as_str(),
+        "posttooluse" | "post-tool-use"
+    )
+}
+
 fn normalize_state(event: &str, payload: &Map<String, Value>) -> Option<String> {
     let normalized = normalized_name(event);
     let state = match normalized.as_str() {
         "userpromptsubmit" | "user-prompt-submit" => "running",
+        "posttooluse" | "post-tool-use" => "running",
         "agent-turn-complete" | "stop" => "ready",
         "stopfailure" | "stop-failure" => "error",
         "sessionend" | "session-end" => "stopped",
@@ -393,6 +411,35 @@ mod tests {
         );
         fs::write(&path, body).unwrap();
         assert_eq!(message_from_transcript(&path), "intact");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn tool_activity_marks_the_run_running_without_reading_the_transcript() {
+        let root = crate::storage::temporary_test_dir("activity");
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("session.jsonl");
+        fs::write(
+            &path,
+            json!({"type": "assistant", "message": {"content": [{"type": "text", "text": "mid-turn text"}]}})
+                .to_string(),
+        )
+        .unwrap();
+
+        let payload = object(json!({
+            "hook_event_name": "PostToolUse",
+            "session_id": "claude-1",
+            "cwd": "/workspace/web",
+            "tool_name": "Bash",
+            "transcript_path": path.display().to_string()
+        }));
+        let event = normalize_event("claude", &payload, None).unwrap();
+        assert_eq!(event.state, "running");
+        assert!(is_activity(&event.event));
+        // A heartbeat must not surface a mid-turn assistant message.
+        assert_eq!(event.message, "");
+        // Or clobber the task the prompt recorded (empty merges with previous).
+        assert_eq!(event.task, "");
         let _ = fs::remove_dir_all(root);
     }
 
