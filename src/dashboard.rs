@@ -40,11 +40,26 @@ pub fn fetch_all(
     (snapshots, errors)
 }
 
+/// The laptop running the dashboard is watched under a reserved alias rather
+/// than over SSH, so it needs neither Remote Login nor a key to itself.
+pub fn is_local_host(host: &str) -> bool {
+    matches!(
+        host.to_ascii_lowercase().as_str(),
+        "local" | "localhost" | "127.0.0.1" | "::1"
+    )
+}
+
 fn fetch_snapshot(
     host: &str,
     timeout: Duration,
     event_limit: usize,
 ) -> (String, Result<Snapshot, String>) {
+    if is_local_host(host) {
+        // Reading local state directly costs a few file reads, so the poll
+        // interval and timeout that pace the SSH hosts do not apply.
+        let result = crate::storage::snapshot(event_limit).map_err(|error| error.to_string());
+        return (host.to_owned(), result);
+    }
     let mut command = snapshot_command(host, timeout, event_limit, control_dir().as_deref());
     let result = match output_with_timeout(&mut command, timeout + Duration::from_secs(2)) {
         Ok(output) if output.status.success() => parse_snapshot_output(&output.stdout),
@@ -446,6 +461,17 @@ mod tests {
         assert!(muxed.contains(&"ControlPersist=10m".to_owned()));
         assert!(muxed.contains(&"ServerAliveInterval=5".to_owned()));
         assert_eq!(muxed[muxed.len() - 2], "coder.dev2");
+    }
+
+    #[test]
+    fn only_the_reserved_aliases_skip_ssh() {
+        for alias in ["local", "LOCAL", "localhost", "127.0.0.1", "::1"] {
+            assert!(is_local_host(alias), "{alias} should poll local state");
+        }
+        // A devbox that merely reads as local-ish is still a remote SSH host.
+        for alias in ["coder.dev2", "local-dev", "dev-local", "localhost.dev", ""] {
+            assert!(!is_local_host(alias), "{alias} should poll over SSH");
+        }
     }
 
     #[test]

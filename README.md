@@ -7,6 +7,8 @@ needs approval, or fails.
 It is deliberately pull-based. Agent hooks only write local state on each
 devbox. The laptop polls the boxes it can already access over SSH, so no
 devbox-to-devbox networking, tunnel, webhook, or central service is required.
+The laptop can also watch itself, under the alias `local`, by reading its own
+state instead of connecting to anything.
 
 ```text
 Codex / Claude hooks              Laptop
@@ -213,6 +215,22 @@ dev-web
 coder.dev-eu
 ```
 
+### Watch the laptop itself
+
+The machine running the dashboard is watched under the reserved alias `local`,
+which reads `~/.local/state/llm-watch` directly instead of connecting to
+anything. Remote Login can stay off and no key to yourself is needed. Add it
+like any other host:
+
+```text
+local
+```
+
+`localhost`, `127.0.0.1`, and `::1` are treated the same way, so none of them
+ever opens an SSH connection. Everything else about the row is unchanged: hooks
+already write local state, so sessions, links, labels, pull requests, and
+desktop notifications all behave as they do for a devbox.
+
 To stop watching a host without deleting it from `~/.ssh/config` or shutting the
 Coder workspace down, list it in:
 
@@ -389,6 +407,11 @@ Tabs are matched by title: the dashboard looks for a tab titled with the same
 SSH alias it shows on the card. The `wezterm.lua` in the dotfiles repo titles
 each devbox tab that way when it opens them, so this works with no extra
 configuration. A tab you opened by hand has no title and will not be matched.
+
+The laptop's own card jumps the same way. `wezterm.lua` gives it a tab titled
+`local` at the end of the tab list, running `tmux new-session -A -s main` — the
+same shape as a devbox tab, minus the `ssh`. Run local agents in that `main`
+session and the jump lands on them.
 
 Nothing is ever spawned. If no tab carries that alias the button says so — `no
 WezTerm tab`, or `WezTerm not running` — and leaves your terminal alone. The
